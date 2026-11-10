@@ -10,6 +10,7 @@ venv/
 
 # Local chat history and settings
 jugnu_history.json
+jugnu_history.json.lock
 jugnu_settings.json
 
 # Environment variables / secrets

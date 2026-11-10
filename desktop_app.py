@@ -15,6 +15,7 @@ import re
 from strings import build_system_prompt, get_string, next_language, normalize_language
 from tts import TTSManager, DEFAULT_RATE, DEFAULT_VOLUME, RATE_MIN, RATE_MAX, clamp
 from assistant import calculate, is_time_question as detect_time_question
+from history_lock import HistoryInUseError, HistoryLock
 
 APP_TITLE = "JUGNU | Just an Unusually Genius Neural Utility"
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -185,10 +186,6 @@ class JugnuApp:
         temp_path = None
 
         try:
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(saved_chats, f, ensure_ascii=False, indent=2)
-        except OSError as e:
-            self.set_status("status_save_error", error=e)
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
@@ -206,7 +203,7 @@ class JugnuApp:
             temp_path = None
 
         except (OSError, TypeError, ValueError) as error:
-            self.set_status(f"Could not save history: {error}")
+            self.set_status("status_save_error", error=error)
 
         finally:
             if temp_path and os.path.exists(temp_path):
@@ -1225,6 +1222,29 @@ class JugnuApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = JugnuApp(root)
-    root.protocol("WM_DELETE_WINDOW", app.on_close)
-    root.mainloop()
+    root.withdraw()
+    lock = HistoryLock(HISTORY_FILE)
+    try:
+        lock.acquire()
+    except HistoryInUseError:
+        messagebox.showerror(
+            "Chat history in use",
+            "Another JUGNU window is using this chat history. Close that window before opening another.",
+            parent=root,
+        )
+        root.destroy()
+    except OSError as error:
+        messagebox.showerror(
+            "Chat history unavailable",
+            f"Could not lock chat history.\n\n{error}",
+            parent=root,
+        )
+        root.destroy()
+    else:
+        try:
+            app = JugnuApp(root)
+            root.protocol("WM_DELETE_WINDOW", app.on_close)
+            root.deiconify()
+            root.mainloop()
+        finally:
+            lock.release()
