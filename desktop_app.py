@@ -2,71 +2,26 @@ import tkinter as tk
 from tkinter import messagebox
 from tkinter import font as tkfont
 import math
-from datetime import datetime
-import json
 import threading
 import requests
-import uuid
 import os
 import sys
-import tempfile
-import ast
-import re
 
-from strings import build_system_prompt, get_string, next_language, normalize_language
-from tts import TTSManager, DEFAULT_RATE, DEFAULT_VOLUME, RATE_MIN, RATE_MAX, clamp
-from assistant import calculate, is_time_question as detect_time_question
+import jugnu_core as core
+# Re-exported so existing code and tests can keep importing them from desktop_app.
+from jugnu_core import (  # noqa: F401
+                        APP_TITLE, OLLAMA_URL, MODEL, HISTORY_FILE, SETTINGS_FILE,
+                        MAX_LIST_TITLE, MAX_TITLE_LENGTH, LIGHT, DARK,
+                        InvalidOllamaResponse, ollama_answer, local_datetime_text,
+                        message_time_text)
+from strings import get_string, next_language
+from tts import TTSManager, RATE_MIN, RATE_MAX
+from assistant import is_time_question as detect_time_question
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import render_markdown, plain_text
 
-APP_TITLE = "JUGNU | Just an Unusually Genius Neural Utility"
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "llama3.2:3b"
-HISTORY_FILE = "jugnu_history.json"
-SETTINGS_FILE = "jugnu_settings.json"
-MAX_LIST_TITLE = 34    # longer chat titles are shortened with "…" in the sidebar list
-MAX_TITLE_LENGTH = 60  # longest title a user can give a chat
 # Markdown styles that indent their lines; bubbles get a few extra columns so those lines do not wrap early.
 INDENT_TAGS = ("code", "codehead", "quote") + tuple("li%d" % n for n in range(5))
-
-
-class InvalidOllamaResponse(ValueError):
-    """The decoded response does not contain a usable chat message."""
-
-
-def ollama_answer(data):
-    if not isinstance(data, dict):
-        raise InvalidOllamaResponse()
-    message = data.get("message")
-    if not isinstance(message, dict):
-        raise InvalidOllamaResponse()
-    content = message.get("content")
-    if not isinstance(content, str):
-        raise InvalidOllamaResponse()
-    return content.strip()
-
-LIGHT = {
-    "bg": "#F7F4FF", "sidebar": "#EEE8FF", "panel": "#FFFFFF",
-    "text": "#27213B", "muted": "#756B91", "accent": "#8B5CF6",
-    "accent2": "#EC4899", "user": "#E3DCFF", "assistant": "#F0EAFB",
-    "entry": "#FFFFFF", "border": "#D9CFF5", "danger": "#FCE7F3",
-    "code": "#FFFFFF", "inline_code": "#E2D9F7"
-}
-DARK = {
-    "bg": "#191728", "sidebar": "#211D35", "panel": "#28223D",
-    "text": "#F4EEFF", "muted": "#B7A9D8", "accent": "#8B6CF0",
-    "accent2": "#D946A6", "user": "#34365A", "assistant": "#2A2440",
-    "entry": "#2A2440", "border": "#463A66", "danger": "#4B2A40",
-    "code": "#17142A", "inline_code": "#3A3157"
-}
-
-def local_datetime_text():
-    # Uses the Windows system's configured local timezone.
-    now = datetime.now().astimezone()
-    return now.strftime("%A, %d %B %Y, %I:%M:%S %p %Z")
-
-def message_time_text():
-    return datetime.now().astimezone().strftime("%I:%M %p")
 
 
 class FlatButton(tk.Label):
@@ -173,175 +128,34 @@ class JugnuApp:
         self.root.after(250, self.warm_up)
         self.poll_speech()
 
+    # The file names are read from this module at call time, so tests can point them elsewhere.
     def load_history(self):
         """Load valid, non-empty conversations from the history file."""
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as history_file:
-                data = json.load(history_file)
-
-            if not isinstance(data, list):
-                return []
-
-            valid_chats = []
-            seen_ids = set()
-
-            for chat in data:
-                if not isinstance(chat, dict):
-                    continue
-
-                chat_id = chat.get("id")
-                messages = chat.get("messages")
-
-                if not isinstance(chat_id, str) or not chat_id.strip():
-                    continue
-                if chat_id in seen_ids:
-                    continue
-                if not isinstance(messages, list):
-                    continue
-
-                valid_messages = []
-                for message in messages:
-                    if not isinstance(message, dict):
-                        continue
-
-                    role = message.get("role")
-                    content = message.get("content")
-
-                    if role not in ("user", "assistant"):
-                        continue
-                    if not isinstance(content, str) or not content.strip():
-                        continue
-
-                    msg_dict = {
-                        "role": role,
-                        "content": content
-                    }
-                    time_val = message.get("time")
-                    if isinstance(time_val, str) and time_val.strip():
-                        msg_dict["time"] = time_val.strip()
-                    if role == "assistant" and message.get("is_error") is True:
-                        msg_dict["is_error"] = True
-
-                    valid_messages.append(msg_dict)
-
-                # Empty conversations should never appear in saved history.
-                if not valid_messages:
-                    continue
-
-                chat["messages"] = valid_messages
-                title = chat.get("title")
-                chat["title"] = title.strip() if isinstance(title, str) and title.strip() else "New Chat"
-
-                valid_chats.append(chat)
-                seen_ids.add(chat_id)
-
-            return valid_chats
-
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return []
+        return core.load_history(HISTORY_FILE)
 
     def save_history(self):
         """Save non-empty conversations atomically to avoid partial JSON files."""
-        saved_chats = [
-            chat for chat in self.chats
-            if isinstance(chat, dict)
-            and isinstance(chat.get("messages"), list)
-            and any(
-                isinstance(message, dict)
-                and message.get("role") in ("user", "assistant")
-                and isinstance(message.get("content"), str)
-                and message["content"].strip()
-                for message in chat["messages"]
-            )
-        ]
-
-        history_path = os.path.abspath(HISTORY_FILE)
-        history_dir = os.path.dirname(history_path)
-        temp_path = None
-
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=history_dir,
-                suffix=".tmp",
-                delete=False
-            ) as temp_file:
-                temp_path = temp_file.name
-                json.dump(saved_chats, temp_file, ensure_ascii=False, indent=2)
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
-
-            # The temporary file is in the same directory, so replacement is atomic.
-            os.replace(temp_path, history_path)
-            temp_path = None
-
+            core.save_history(self.chats, HISTORY_FILE)
         except (OSError, TypeError, ValueError) as error:
             self.set_status("status_save_error", error=error)
 
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-
     def load_settings(self):
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            if not isinstance(data, dict):
-                return True
-
-            return bool(data.get("dark_mode", True))
-
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return True
+        return core.load_dark_mode(SETTINGS_FILE)
 
     def load_voice_setting(self):
-        # Voice output is off by default; the choice is remembered between launches.
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return bool(json.load(f).get("voice_enabled", False))
-        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
-            return False
+        return core.load_voice_enabled(SETTINGS_FILE)
 
     def load_voice_prefs(self):
-        # Speed, volume and voice choice. Anything missing or damaged falls back to the defaults.
-        rate, volume, voice_id = DEFAULT_RATE, DEFAULT_VOLUME, None
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            saved_rate = data.get("voice_rate")
-            saved_volume = data.get("voice_volume")
-            saved_voice = data.get("voice_id")
-            if isinstance(saved_rate, (int, float)) and not isinstance(saved_rate, bool):
-                rate = int(clamp(saved_rate, RATE_MIN, RATE_MAX))
-            if isinstance(saved_volume, (int, float)) and not isinstance(saved_volume, bool):
-                volume = float(clamp(saved_volume, 0.0, 1.0))
-            if isinstance(saved_voice, str) and saved_voice:
-                voice_id = saved_voice
-        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
-            pass
-        return rate, volume, voice_id
+        return core.load_voice_prefs(SETTINGS_FILE)
 
     def load_language_setting(self):
-        # English by default; an unknown or damaged value also falls back to English.
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return normalize_language(json.load(f).get("language"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
-            return normalize_language(None)
+        return core.load_language(SETTINGS_FILE)
 
     def save_settings(self):
-        try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump({"dark_mode": self.dark_mode, "voice_enabled": self.voice_enabled,
-                           "language": self.language, "voice_rate": self.voice_rate,
-                           "voice_volume": self.voice_volume, "voice_id": self.voice_id}, f)
-        except OSError:
-            pass
+        core.save_settings(SETTINGS_FILE, dark_mode=self.dark_mode, voice_enabled=self.voice_enabled,
+                           language=self.language, voice_rate=self.voice_rate,
+                           voice_volume=self.voice_volume, voice_id=self.voice_id)
 
     def build_ui(self):
         # Visible text is filled in by apply_language(), so it can be switched at runtime.
@@ -813,10 +627,7 @@ class JugnuApp:
         selected = self.current_id
         self.history_list.delete(0, "end")
         for chat in reversed(self.chats):
-            title = chat.get("title", "New Chat")
-            if len(title) > MAX_LIST_TITLE:
-                title = title[:MAX_LIST_TITLE - 1] + "…"
-            self.history_list.insert("end", "  ◌  " + title)
+            self.history_list.insert("end", "  ◌  " + core.list_title(chat.get("title", "New Chat")))
         if selected:
             for idx, chat in enumerate(reversed(self.chats)):
                 if chat.get("id") == selected:
@@ -824,7 +635,7 @@ class JugnuApp:
                     break
 
     def make_draft(self):
-        self.draft_chat = {"id": str(uuid.uuid4()), "title": "New Chat", "messages": []}
+        self.draft_chat = core.new_chat()
         self.current_id = self.draft_chat["id"]
 
     def new_chat(self):
@@ -894,7 +705,7 @@ class JugnuApp:
         new_title = self.ask_chat_title(chat.get("title", ""))
         if new_title is None:
             return  # cancelled
-        new_title = " ".join(new_title.split())[:MAX_TITLE_LENGTH]  # tidy spaces, cap the length
+        new_title = core.tidy_title(new_title)
         if not new_title or new_title == chat.get("title"):
             return  # an empty name is ignored: the old title stays
         chat["title"] = new_title
@@ -1306,74 +1117,15 @@ class JugnuApp:
 
     def warm_up(self):
         def task():
-            try:
-                requests.post(OLLAMA_URL, json={
-                    "model": MODEL, "messages": [{"role": "user", "content": "Reply with OK."}],
-                    "stream": False, "keep_alive": "10m",
-                    "options": {"num_predict": 3}
-                }, timeout=90)
-                self.root.after(0, lambda: self.set_status("status_ready"))
-            except requests.RequestException:
-                self.root.after(0, lambda: self.set_status("status_offline"))
+            key = "status_ready" if core.warm_up() else "status_offline"
+            self.root.after(0, lambda: self.set_status(key))
         threading.Thread(target=task, daemon=True).start()
 
     def is_time_question(self, text):
         return detect_time_question(text)
 
     def extract_calc_expression(self, text):
-        """
-        Extracts an arithmetic expression from user input if present.
-        Supports explicit commands (e.g. 'calculate 12*7', 'solve 0/0'),
-        conversational math requests (e.g. 'the expression is 5/3+3', 'what is 12*7?'),
-        and plain arithmetic expressions (e.g. '12*7', '5/3+3').
-        Returns the expression string if detected, or None for general chat.
-        """
-        q = text.strip()
-        if not q:
-            return None
-
-        def is_math_ast(expr_str):
-            if re.search(r"\d{1,4}[-/]\d{1,2}[-/]\d{2,4}", expr_str):
-                return False
-            if re.fullmatch(r"[\d\.\s\+\-\*\/\%\(\)]+", expr_str):
-                if any(op in expr_str for op in ["+", "*", "/", "%"]) or re.search(r"\d\s*-\s*\d", expr_str):
-                    try:
-                        tree = ast.parse(expr_str, mode="eval")
-                        valid_nodes = (
-                            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
-                            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv,
-                            ast.Mod, ast.Pow, ast.USub, ast.UAdd
-                        )
-                        if all(isinstance(node, valid_nodes) for node in ast.walk(tree)):
-                            if any(isinstance(node, ast.BinOp) for node in ast.walk(tree)):
-                                return True
-                    except Exception:
-                        pass
-            return False
-
-        # 1. Direct command prefixes: 'calculate', 'calc', 'solve', 'evaluate'
-        match = re.match(r"^(?:calculate|calc|solve|evaluate)(?:[:\s]+(.*)|$)", q, flags=re.IGNORECASE)
-        if match:
-            remainder = match.group(1).strip() if match.group(1) else ""
-            # Strip optional 'the expression' / 'the value of' from remainder, e.g. 'calculate the expression 5/3+3'
-            remainder = re.sub(r"^(?:the\s+)?(?:expression|value\s+of)[:\s]*", "", remainder, flags=re.IGNORECASE).strip()
-            return remainder
-
-        # 2. Conversational math prefixes: 'the expression is ...', 'expression: ...', 'what is ...', 'value of ...'
-        m_conv = re.match(
-            r"^(?:(?:what\s+is|what\'s)\s+(?:the\s+)?(?:value\s+of|expression\s+is|expression)?|(?:the\s+)?(?:expression|value)\s+(?:is|of)|expression)[:\s]*(.*)$",
-            q, flags=re.IGNORECASE
-        )
-        if m_conv and m_conv.group(1).strip():
-            candidate = m_conv.group(1).strip().rstrip("?. ")
-            if is_math_ast(candidate):
-                return candidate
-
-        # 3. Plain arithmetic expression (e.g. '12*7', '5/3+3', '0/0')
-        if is_math_ast(q):
-            return q
-
-        return None
+        return core.extract_calc_expression(text)
 
     def send_message(self, _event=None):
         if self.busy:
@@ -1401,16 +1153,9 @@ class JugnuApp:
         self.send_btn.configure(state="disabled")
         self.set_status("status_thinking")
 
-        # Answer clock/date questions locally for accuracy and speed—no model call required.
-        if self.is_time_question(user_text):
-            answer = self.t("time_answer", when=local_datetime_text())
-            self.finish_answer(answer, chat["id"])
-            return "break"
-
-        # Answer arithmetic questions locally using safe AST calculator—no model call required.
-        calc_expr = self.extract_calc_expression(user_text)
-        if calc_expr is not None:
-            answer = calculate(calc_expr)
+        # Clock/date and arithmetic questions are answered locally—no model call required.
+        answer = core.local_answer(user_text, self.language)
+        if answer is not None:
             self.finish_answer(answer, chat["id"])
             return "break"
 
@@ -1419,44 +1164,12 @@ class JugnuApp:
 
     def ask_ollama(self, chat_id):
         language = self.language  # The prompt and any error text use the language chosen at send time.
-        is_error = True
-        try:
-            chat = next((c for c in self.chats if c.get("id") == chat_id), None)
-            if not chat:
-                # The conversation may have been cleared while the request was running.
-                self.root.after(0, lambda: self.finish_answer(None, chat_id))
-                return
-            # Keep recent context only, to reduce prompt size and improve latency.
-            recent = [
-                m for m in chat.get("messages", [])
-                if not (m["role"] == "assistant" and m.get("is_error") is True)
-            ][-10:]
-            messages = [{
-                "role": "system",
-                "content": build_system_prompt(language, local_datetime_text())
-            }]
-            messages.extend({"role": m["role"], "content": m["content"]} for m in recent)
-            response = requests.post(OLLAMA_URL, json={
-                "model": MODEL,
-                "messages": messages,
-                "stream": False,
-                "keep_alive": "10m",
-                "options": {"num_predict": 256, "temperature": 0.6}
-            }, timeout=180)
-            response.raise_for_status()
-            answer = ollama_answer(response.json())
-            if not answer:
-                answer = get_string(language, "error_empty_reply")
-            else:
-                is_error = False
-        except InvalidOllamaResponse:
-            answer = get_string(language, "error_invalid_response")
-        except requests.Timeout:
-            answer = get_string(language, "error_timeout")
-        except requests.ConnectionError:
-            answer = get_string(language, "error_connection")
-        except (requests.RequestException, ValueError) as e:
-            answer = get_string(language, "error_generic", error=e)
+        chat = next((c for c in self.chats if c.get("id") == chat_id), None)
+        if not chat:
+            # The conversation may have been cleared while the request was running.
+            self.root.after(0, lambda: self.finish_answer(None, chat_id))
+            return
+        answer, is_error = core.ask_ollama(chat, language)
         self.root.after(0, lambda: self.finish_answer(answer, chat_id, is_error=is_error))
 
     def finish_answer(self, answer, chat_id=None, is_error=False):
