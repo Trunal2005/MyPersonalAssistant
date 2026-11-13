@@ -2,7 +2,8 @@
 
 It does not draw anything. It turns Markdown text into a flat list of `Seg`
 pieces (text + style tag names) that desktop_app.py inserts into a tk.Text
-widget. Keeping it free of Tkinter means it can be unit-tested without a window.
+widget, and render_html() turns those pieces into HTML for the Qt app (qt_app.py).
+Keeping it free of any GUI code means it can be unit-tested without a window.
 
 Supported: **bold**, *italic*, ***both***, ~~strike~~, `inline code`,
 [links](url), # headings, - / * / + bullets, 1. numbered lists (nested by
@@ -276,3 +277,112 @@ def plain_text(text):
         return "".join(seg.text for seg in render_markdown(text) if seg.copy is None)
     except Exception:
         return text if isinstance(text, str) else ""
+
+
+# ---------- HTML for Qt rich text ----------
+_INLINE_CSS = {
+    "bold": "font-weight:600;",
+    "italic": "font-style:italic;",
+    "bolditalic": "font-weight:600; font-style:italic;",
+    "strike": "text-decoration:line-through;",
+    "link": "color:{accent}; text-decoration:underline;",
+    "linkurl": "color:{muted};",
+    "icode": "font-family:'{mono}'; background-color:{inline_code};",
+    "quote": "color:{muted};",
+    "rule": "color:{border};",
+}
+_HEADING_SCALE = {"h1": 1.4, "h2": 1.2, "h3": 1.1}
+
+
+def _line_kind(tags):
+    """Which kind of block a line is, from the style names used on it."""
+    for kind in ("codehead", "code", "h1", "h2", "h3", "quote"):
+        if kind in tags:
+            return kind
+    return next((name for name in sorted(tags) if name.startswith("li")), "text")
+
+
+def _split_lines(segs):
+    """Seg list -> lines of [segments, set of tags, code to copy or None]."""
+    lines = [[[], set(), None]]
+    for seg in segs:
+        if seg.copy is not None:
+            lines[-1][2] = seg.copy
+            continue
+        parts = seg.text.split("\n")
+        for number, part in enumerate(parts):
+            if number:
+                lines[-1][1].update(seg.tags)  # the line break carries the style of the line it ends
+                lines.append([[], set(), None])
+            if part:
+                lines[-1][0].append(Seg(part, seg.tags))
+                lines[-1][1].update(seg.tags)
+    return lines
+
+
+def render_html(text, colors, mono="monospace", base_pt=10, copy_label="Copy"):
+    """Markdown text -> (html, codes) for a Qt rich-text widget. Never raises.
+
+    `colors` is a theme palette (LIGHT / DARK). Each code block gets a link "copy:N";
+    codes[N] is the exact code it copies.
+    """
+    import html as _html
+
+    def esc(value):
+        return _html.escape(value, quote=False)
+
+    try:
+        css = {name: rule.format(mono=mono, **colors) for name, rule in _INLINE_CSS.items()}
+        out, codes, code_lines = [], [], None
+
+        def inline(segments):
+            parts = []
+            for seg in segments:
+                text_html = esc(seg.text)
+                if "icode" in seg.tags:
+                    text_html = text_html.replace(" ", "&nbsp;")
+                style = "".join(css[tag] for tag in seg.tags if tag in css)
+                parts.append(f'<span style="{style}">{text_html}</span>' if style else text_html)
+            return "".join(parts)
+
+        def close_code():
+            if code_lines is not None:
+                out.append(f'<pre style="font-family:\'{mono}\'; color:{colors["text"]}; margin:0;">'
+                           + "\n".join(code_lines) + "</pre></td></tr></table>")
+
+        for segments, tags, copy in _split_lines(render_markdown(text)):
+            kind = _line_kind(tags)
+            if kind == "code" and code_lines is not None:
+                code_lines.append(esc("".join(seg.text for seg in segments)))
+                continue
+            close_code()
+            code_lines = None
+            if kind == "codehead":
+                label = esc("".join(seg.text for seg in segments).strip())
+                link = ""
+                if copy is not None:
+                    link = (f' &nbsp; <a href="copy:{len(codes)}" style="color:{colors["accent"]};'
+                            f' text-decoration:none;">{esc(copy_label)}</a>')
+                    codes.append(copy)
+                out.append(f'<table width="100%" cellspacing="0" cellpadding="8" bgcolor="{colors["code"]}"'
+                           f' style="margin-top:4px; margin-bottom:4px;"><tr><td>'
+                           f'<p style="margin:0 0 4px 0; color:{colors["muted"]};'
+                           f' font-size:{base_pt - 1}pt; font-weight:600;">{label}{link}</p>')
+                code_lines = []
+            elif kind == "code":  # a code line without its header (should not happen); show it plainly
+                out.append(f'<p style="margin:0; font-family:\'{mono}\';">{inline(segments)}</p>')
+            elif kind in _HEADING_SCALE:
+                size = round(base_pt * _HEADING_SCALE[kind], 1)
+                out.append(f'<p style="margin:4px 0 2px 0; font-size:{size}pt; font-weight:600;'
+                           f' color:{colors["accent"]};">{inline(segments)}</p>')
+            elif kind.startswith("li"):
+                indent = 4 + int(kind[2:]) * 18
+                out.append(f'<p style="margin:0 0 0 {indent}px;">{inline(segments)}</p>')
+            elif segments:
+                out.append(f'<p style="margin:0;">{inline(segments)}</p>')
+            else:
+                out.append('<p style="margin:0;">&nbsp;</p>')
+        close_code()
+        return "".join(out), codes
+    except Exception:  # a renderer bug must never break the chat
+        return "<p>" + esc(text if isinstance(text, str) else "") + "</p>", []

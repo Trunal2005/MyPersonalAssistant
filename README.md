@@ -1,10 +1,10 @@
 # JUGNU – Personal AI Assistant 🤖
 
 [![Winter of Code Social 2026](https://img.shields.io/badge/WOCS-2026-blue?style=for-the-badge&logo=github)](https://woc.codesocial.tech)
-[![Python](https://img.shields.io/badge/Python-3.8+-yellow?style=for-the-badge&logo=python)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.9+-yellow?style=for-the-badge&logo=python)](https://python.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=for-the-badge)](CONTRIBUTING.md)
 
-**JUGNU (Just an Unusually Genius Neural Utility)** is a personal desktop AI assistant built using Python, Tkinter, Ollama, and Llama 3.2.
+**JUGNU (Just an Unusually Genius Neural Utility)** is a personal desktop AI assistant built using Python, Qt (PySide6), Ollama, and Llama 3.2.
 
 JUGNU is designed to provide a simple and friendly AI chat experience while exploring practical AI and Machine Learning applications on the desktop.
 
@@ -40,14 +40,14 @@ Contributors can earn points on the leaderboard based on merged PRs tagged with:
 ## 🛠️ Tech Stack
 
 - **Language**: Python
-- **GUI**: Tkinter / ttk
+- **GUI**: PySide6 (Qt for Python), themed with Qt Style Sheets (`jugnu.qss`). The older Tkinter window (`desktop_app.py`) still works while the migration finishes ([#43](https://github.com/kismatkumari56/MyPersonalAssistant/issues/43)).
 - **LLM Engine**: Ollama (Llama 3.2 3B)
 - **Networking**: Requests, JSON
 
 ## ⚙️ Setup Instructions
 
 ### 1. Install Python
-Ensure Python 3.8+ is installed on your system.
+Ensure Python 3.9+ is installed on your system.
 
 ### 2. Install Ollama
 Download and install Ollama from [ollama.com](https://ollama.com/).
@@ -106,7 +106,7 @@ python -m pytest tests/test_time_question.py -v
 
 The test suite covers calculator operations, error handling, unsupported expressions, and time/date question detection.
 
-**Note:** Running the tests does not require launching the Tkinter desktop application or starting the Ollama server.
+**Note:** Running the tests does not require starting the Ollama server. The Qt tests (`tests/test_qt_app.py`) run offscreen with `pytest-qt`, so no window opens; the app's logic (`jugnu_core.py`) is tested without any GUI.
 
 
 ## 👩‍💻 Project Admin
