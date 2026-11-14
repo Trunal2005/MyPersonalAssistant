@@ -3,7 +3,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 
@@ -90,22 +89,24 @@ def test_second_desktop_launch_reports_conflict(tmp_path):
     lock.acquire()
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SOURCE)
+    env["QT_QPA_PLATFORM"] = "offscreen"
     code = """
-import runpy
 import sys
 from unittest.mock import patch
 
-with patch("tkinter.Tk") as tk, patch("tkinter.messagebox.showerror") as showerror:
-    runpy.run_path(sys.argv[1], run_name="__main__")
-    assert showerror.call_args.args[0] == "Chat history in use"
-    tk.return_value.title.assert_not_called()
-    tk.return_value.destroy.assert_called_once()
+import qt_app
+
+with patch.object(qt_app.QMessageBox, "critical") as critical, \\
+        patch.object(qt_app, "JugnuWindow") as window:
+    assert qt_app.main() == 1
+    assert critical.call_args.args[1] == "Chat history in use"
+    window.assert_not_called()
 """
     try:
         result = subprocess.run(
-            [sys.executable, "-B", "-c", code, str(SOURCE / "desktop_app.py")],
+            [sys.executable, "-B", "-c", code],
             cwd=tmp_path, env=env,
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=30,
         )
     finally:
         lock.release()
@@ -113,22 +114,30 @@ with patch("tkinter.Tk") as tk, patch("tkinter.messagebox.showerror") as showerr
 
 
 def test_failed_history_replace_preserves_existing_file(tmp_path, monkeypatch):
-    import desktop_app
+    import jugnu_core
 
     history = tmp_path / "history.json"
     original = '[{"title":"preserved"}]'
     history.write_text(original, encoding="utf-8")
-    monkeypatch.setattr(desktop_app, "HISTORY_FILE", history)
-    app = desktop_app.JugnuApp.__new__(desktop_app.JugnuApp)
-    app.chats = []
-    app.set_status = Mock()
 
     def fail_replace(*args):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr(desktop_app.os, "replace", fail_replace)
-    app.save_history()
+    monkeypatch.setattr(jugnu_core.os, "replace", fail_replace)
+    with pytest.raises(OSError):
+        jugnu_core.save_history([], history)
 
     assert history.read_text(encoding="utf-8") == original
     assert list(tmp_path.iterdir()) == [history]
-    assert app.set_status.call_args.args == ("status_save_error",)
+
+
+def test_window_reports_a_failed_save_in_the_status_line(window, monkeypatch):
+    import jugnu_core
+
+    def fail_replace(*args):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(jugnu_core.os, "replace", fail_replace)
+    window.chats = [{"id": "a", "title": "A", "messages": [{"role": "user", "content": "x"}]}]
+    window.save_history()
+    assert window._status[0] == "status_save_error"

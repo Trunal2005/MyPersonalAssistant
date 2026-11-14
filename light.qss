@@ -1,22 +1,22 @@
-/* JUGNU's Qt theme. Each colour below is a palette key after a dollar sign; qt_app.py fills it in
-   from the LIGHT or DARK palette in jugnu_core.py, so one file styles both themes. Widgets are matched by objectName (#name) or by the "variant",
-   "role" and "state" properties set in qt_app.py. */
+/* JUGNU's light theme (Qt Style Sheets). qt_app.py applies it with app.setStyleSheet().
+   dark.qss has the same rules with the dark colours, so change both files together.
+   Colours match the LIGHT palette in jugnu_core.py, which the chat bubbles' Markdown uses. */
 
 QMainWindow, QDialog, #content, #messages {
-    background: $bg;
+    background: #F7F4FF;
 }
 QWidget {
-    color: $text;
+    color: #27213B;
 }
 QToolTip {
-    background: $panel;
-    color: $text;
-    border: 1px solid $border;
+    background: #FFFFFF;
+    color: #27213B;
+    border: 1px solid #D9CFF5;
 }
 
 /* ---------- Buttons ---------- */
 QPushButton {
-    background: $accent;
+    background: #8B5CF6;
     color: white;
     border: none;
     border-radius: 8px;
@@ -24,48 +24,48 @@ QPushButton {
     font-weight: 600;
 }
 QPushButton:hover {
-    background: $accent2;
+    background: #EC4899;
 }
 QPushButton:pressed {
-    background: $accent;
+    background: #8B5CF6;
 }
 QPushButton:disabled {
-    background: $border;
-    color: $muted;
+    background: #D9CFF5;
+    color: #756B91;
 }
 QPushButton:focus {
     outline: none;
 }
 QPushButton[variant="danger"] {
-    background: $danger;
-    color: $accent2;
+    background: #FCE7F3;
+    color: #EC4899;
 }
 QPushButton[variant="danger"]:hover {
-    color: $text;
+    color: #27213B;
 }
 QPushButton[variant="stop"] {
-    background: $accent2;
+    background: #EC4899;
     padding: 4px 12px;
 }
 QPushButton[variant="stop"]:hover {
-    background: $danger;
-    color: $accent2;
+    background: #FCE7F3;
+    color: #EC4899;
 }
 /* Small text buttons inside a chat bubble (Copy, Read aloud). */
 QPushButton[variant="ghost"] {
     background: transparent;
-    color: $muted;
+    color: #756B91;
     border-radius: 6px;
     padding: 1px 6px;
     font-size: 8pt;
 }
 QPushButton[variant="ghost"]:hover {
-    background: $border;
-    color: $accent;
+    background: #D9CFF5;
+    color: #8B5CF6;
 }
 QPushButton[variant="ghost"]:disabled {
     background: transparent;
-    color: $border;
+    color: #D9CFF5;
 }
 QPushButton[variant="ghost"][state="copied"] {
     color: #10B981;
@@ -73,15 +73,15 @@ QPushButton[variant="ghost"][state="copied"] {
 
 /* ---------- Sidebar ---------- */
 #sidebar {
-    background: $sidebar;
+    background: #EEE8FF;
 }
 #brand {
-    color: $accent;
+    color: #8B5CF6;
     font-size: 22pt;
     font-weight: 700;
 }
 #tagline, #historyLabel {
-    color: $muted;
+    color: #756B91;
     font-size: 9pt;
 }
 #historyLabel {
@@ -98,16 +98,16 @@ QPushButton[variant="ghost"][state="copied"] {
     padding: 6px 8px;
 }
 #historyList::item:hover {
-    background: $border;
+    background: #D9CFF5;
 }
 #historyList::item:selected {
-    background: $accent;
+    background: #8B5CF6;
     color: white;
 }
 
 /* ---------- Header ---------- */
 #header {
-    background: $accent;
+    background: #8B5CF6;
 }
 #headerTitle {
     color: white;
@@ -122,30 +122,30 @@ QPushButton[variant="ghost"][state="copied"] {
 
 /* ---------- Chat ---------- */
 #chatScroll {
-    background: $bg;
+    background: #F7F4FF;
     border: none;
 }
 #bubble[role="user"] {
-    background: $user;
+    background: #E3DCFF;
     border-radius: 12px;
 }
 #bubble[role="assistant"] {
-    background: $assistant;
+    background: #F0EAFB;
     border-radius: 12px;
 }
 #bubbleName {
-    color: $accent;
+    color: #8B5CF6;
     font-size: 9pt;
     font-weight: 600;
 }
 #bubbleTime {
-    color: $muted;
+    color: #756B91;
     font-size: 8pt;
 }
 #bubbleText {
     background: transparent;
     border: none;
-    selection-background-color: $accent;
+    selection-background-color: #8B5CF6;
     selection-color: white;
 }
 #welcomeTitle {
@@ -153,11 +153,11 @@ QPushButton[variant="ghost"][state="copied"] {
     font-weight: 700;
 }
 #welcomeTagline {
-    color: $muted;
+    color: #756B91;
     font-size: 12pt;
 }
 #welcomePrompt, #welcomeEmoji {
-    color: $accent;
+    color: #8B5CF6;
     font-size: 12pt;
 }
 #welcomeEmoji {
@@ -166,59 +166,59 @@ QPushButton[variant="ghost"][state="copied"] {
 
 /* ---------- Input and dialogs ---------- */
 QPlainTextEdit, QLineEdit {
-    background: $entry;
-    color: $text;
-    border: 1px solid $border;
+    background: #FFFFFF;
+    color: #27213B;
+    border: 1px solid #D9CFF5;
     border-radius: 10px;
     padding: 8px;
-    selection-background-color: $accent;
+    selection-background-color: #8B5CF6;
     selection-color: white;
 }
 QPlainTextEdit:focus, QLineEdit:focus {
-    border: 1px solid $accent;
+    border: 1px solid #8B5CF6;
 }
 QLabel[variant="field"] {
     font-weight: 600;
 }
 QComboBox {
-    background: $panel;
-    color: $text;
-    border: 1px solid $border;
+    background: #FFFFFF;
+    color: #27213B;
+    border: 1px solid #D9CFF5;
     border-radius: 8px;
     padding: 6px 10px;
 }
 QComboBox:hover {
-    border: 1px solid $accent;
+    border: 1px solid #8B5CF6;
 }
 QComboBox QAbstractItemView {
-    background: $panel;
-    color: $text;
-    selection-background-color: $accent;
+    background: #FFFFFF;
+    color: #27213B;
+    selection-background-color: #8B5CF6;
     selection-color: white;
-    border: 1px solid $border;
+    border: 1px solid #D9CFF5;
 }
 QSlider::groove:horizontal {
-    background: $border;
+    background: #D9CFF5;
     height: 6px;
     border-radius: 3px;
 }
 QSlider::sub-page:horizontal {
-    background: $accent;
+    background: #8B5CF6;
     border-radius: 3px;
 }
 QSlider::handle:horizontal {
-    background: $accent;
+    background: #8B5CF6;
     width: 16px;
     margin: -5px 0;
     border-radius: 8px;
 }
 QSlider::handle:horizontal:hover {
-    background: $accent2;
+    background: #EC4899;
 }
 QMenu {
-    background: $panel;
-    color: $text;
-    border: 1px solid $border;
+    background: #FFFFFF;
+    color: #27213B;
+    border: 1px solid #D9CFF5;
     padding: 4px;
 }
 QMenu::item {
@@ -226,11 +226,11 @@ QMenu::item {
     border-radius: 4px;
 }
 QMenu::item:selected {
-    background: $accent;
+    background: #8B5CF6;
     color: white;
 }
 QMenu::item:disabled {
-    color: $muted;
+    color: #756B91;
 }
 
 /* ---------- Scroll bars ---------- */
@@ -240,12 +240,12 @@ QScrollBar:vertical {
     margin: 2px;
 }
 QScrollBar::handle:vertical {
-    background: $border;
+    background: #D9CFF5;
     border-radius: 3px;
     min-height: 30px;
 }
 QScrollBar::handle:vertical:hover {
-    background: $muted;
+    background: #756B91;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {

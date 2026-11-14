@@ -1,8 +1,8 @@
 """A small, dependency-free Markdown reader for JUGNU's chat bubbles.
 
 It does not draw anything. It turns Markdown text into a flat list of `Seg`
-pieces (text + style tag names) that desktop_app.py inserts into a tk.Text
-widget, and render_html() turns those pieces into HTML for the Qt app (qt_app.py).
+pieces (text + style names), and render_html() turns those pieces into HTML for
+the chat bubbles in qt_app.py.
 Keeping it free of any GUI code means it can be unit-tested without a window.
 
 Supported: **bold**, *italic*, ***both***, ~~strike~~, `inline code`,
@@ -15,7 +15,7 @@ render_markdown() never raises: on any problem it falls back to plain text.
 import re
 from collections import namedtuple
 
-# text: what to insert.  tags: style names for tk.Text.  copy: when not None, this
+# text: what to insert.  tags: style names.  copy: when not None, this
 # piece is not text at all but a spot for a "Copy" button that copies this code.
 Seg = namedtuple("Seg", ["text", "tags", "copy"])
 Seg.__new__.__defaults__ = ((), None)
@@ -35,7 +35,7 @@ _LINK_RE = re.compile(r"\[([^\[\]\n]+)\]\(([^()\s]+)\)")
 
 
 def _add_tag(tags, name):
-    """Add a style name. Bold + italic become one 'bolditalic' tag (Tk cannot merge two fonts)."""
+    """Add a style name. Bold + italic become one 'bolditalic' style."""
     names = set(tags)
     names.add(name)
     if "bold" in names and "italic" in names:

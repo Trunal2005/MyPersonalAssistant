@@ -1,7 +1,7 @@
 """JUGNU's logic, with no GUI code: chat history, settings, local answers and the Ollama client.
 
-Both desktop front ends (the Tkinter one in desktop_app.py and the Qt one in qt_app.py)
-build on these functions, and the tests can call them without opening a window.
+The desktop window (qt_app.py) builds on these functions, and the tests can call them
+without opening a window.
 """
 import ast
 import json

@@ -1,106 +1,29 @@
-"""The PySide6 window (qt_app.py). Runs offscreen, so no display is needed.
-
-Skipped when PySide6 or pytest-qt is not installed.
-"""
-import importlib.util
-import json
+"""The main window as a whole: startup, sending, theme, language and voice controls."""
 import os
-import threading
-from unittest.mock import patch
+import re
 
 import pytest
-import requests
 
 import jugnu_core
+from conftest import saved_history, send
 from strings import get_string
 
-if not (importlib.util.find_spec("PySide6") and importlib.util.find_spec("pytestqt")):
-    pytest.skip("PySide6 and pytest-qt are needed for the Qt tests", allow_module_level=True)
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-qt_app = Qt = QApplication = QUrl = None  # imported by the fixture below, see tests/conftest.py
-
-
-@pytest.fixture(autouse=True)
-def qt_imports():
-    global qt_app, Qt, QApplication, QUrl
-    import qt_app as module
-    from PySide6.QtCore import Qt as qt_namespace, QUrl as url_class
-    from PySide6.QtWidgets import QApplication as app_class
-    qt_app, Qt, QApplication, QUrl = module, qt_namespace, app_class, url_class
-
-
-class FakeTTS:
-    available = False
-    speaking = False
-    voices = []
-
-    def __init__(self, *args, **kwargs):
-        self.spoken = []
-
-    def stop(self):
-        pass
-
-    def speak(self, text):
-        self.spoken.append(text)
-
-    def apply_settings(self, *args):
-        pass
-
-    def shutdown(self):
-        pass
-
-
-def make_chat(chat_id, title):
-    return {"id": chat_id, "title": title, "messages": [
-        {"role": "user", "content": f"question for {title}"},
-        {"role": "assistant", "content": f"answer for {title}"}]}
-
-
-def ok_response(content):
-    result = requests.Response()
-    result.status_code = 200
-    result._content = json.dumps({"message": {"content": content}}).encode()
-    return result
-
-
-@pytest.fixture
-def window(qt_imports, qtbot, tmp_path, monkeypatch):
-    monkeypatch.setattr(qt_app, "TTSManager", FakeTTS)
-    monkeypatch.setattr(jugnu_core, "warm_up", lambda: True)  # no Ollama call
-    win = qt_app.JugnuWindow(history_file=str(tmp_path / "history.json"),
-                             settings_file=str(tmp_path / "settings.json"))
-    qtbot.addWidget(win)
-    win.resize(1100, 700)
-    win.show()
-    return win
-
-
-@pytest.fixture
-def with_chats(window):
-    window.chats = [make_chat("a", "Alpha"), make_chat("b", "Beta"), make_chat("c", "Gamma")]
-    window.current_id = "c"
-    window.draft_chat = None
-    window.save_history()
-    window.display_chat()
-    return window
-
-
-def saved(window):
-    with open(window.history_file, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def send(qtbot, window, text):
-    window.input_box.setPlainText(text)
-    qtbot.mouseClick(window.send_btn, Qt.LeftButton)
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def test_starts_with_welcome_and_an_unsaved_draft(window):
     assert window.current_chat()["messages"] == []
-    assert window.chats == []
-    assert window.bubbles == []
+    assert window.chats == [] and window.bubbles == []
     assert not os.path.exists(window.history_file)
+
+
+def test_reopens_the_most_recent_chat(make_window):
+    app = make_window([
+        {"id": "old", "title": "Old", "messages": [{"role": "user", "content": "first"}]},
+        {"id": "new", "title": "New", "messages": [{"role": "user", "content": "second"}]},
+    ])
+    assert app.current_id == "new"
+    assert [b.text for b in app.bubbles] == ["second"]
 
 
 def test_local_answer_adds_bubbles_and_saves(qtbot, window):
@@ -109,10 +32,17 @@ def test_local_answer_adds_bubbles_and_saves(qtbot, window):
     assert [m["role"] for m in window.current_chat()["messages"]] == ["user", "assistant"]
     assert len(window.bubbles) == 2
     assert window.history_list.count() == 1
-    assert saved(window)[0]["title"] == "calculate 6*7"
+    assert saved_history(window)[0]["title"] == "calculate 6*7"
+
+
+def test_empty_message_is_not_sent(qtbot, window):
+    send(qtbot, window, "   \n ")
+    assert window.chats == [] and window.bubbles == []
 
 
 def test_enter_sends_and_shift_enter_adds_a_line(qtbot, window):
+    from PySide6.QtCore import Qt
+
     window.input_box.setFocus()
     qtbot.keyClicks(window.input_box, "2+2")
     qtbot.keyClick(window.input_box, Qt.Key_Return, Qt.ShiftModifier)
@@ -122,133 +52,75 @@ def test_enter_sends_and_shift_enter_adds_a_line(qtbot, window):
     assert window.current_chat()["messages"][0]["content"] == "2+2"
 
 
-def test_model_reply_arrives_through_the_signal(qtbot, window):
-    with patch.object(jugnu_core.requests, "post", return_value=ok_response("**Hello**")):
-        send(qtbot, window, "Tell me something")
-        assert window.busy and not window.send_btn.isEnabled()
-        qtbot.waitUntil(lambda: not window.busy, timeout=3000)
-    assert window.send_btn.isEnabled()
-    assert window.current_chat()["messages"][-1]["content"] == "**Hello**"
-    assert "Hello" in window.bubbles[-1].body.toPlainText()
-    assert "**" not in window.bubbles[-1].body.toPlainText()
-
-
-def test_failure_is_saved_as_an_error_notice(qtbot, window):
-    with patch.object(jugnu_core.requests, "post", side_effect=requests.ConnectionError()):
-        send(qtbot, window, "Hello?")
-        qtbot.waitUntil(lambda: not window.busy, timeout=3000)
-    last = window.current_chat()["messages"][-1]
-    assert last["content"] == get_string("en", "error_connection")
-    assert last["is_error"] is True
-
-
-def test_reply_stays_with_the_chat_that_asked(qtbot, window):
-    started, release = threading.Event(), threading.Event()
-
-    def delayed(*_args, **_kwargs):
-        started.set()
-        assert release.wait(3)
-        return ok_response("Delayed reply")
-
-    with patch.object(jugnu_core.requests, "post", side_effect=delayed):
-        send(qtbot, window, "Original prompt")
-        qtbot.waitUntil(started.is_set, timeout=3000)
-        original = window.current_chat()
-        send(qtbot, window, "Ignored while busy")
-        window.new_chat()
-        release.set()
-        qtbot.waitUntil(lambda: not window.busy, timeout=3000)
+def test_new_chat_is_not_saved_until_a_message_is_sent(qtbot, window):
+    send(qtbot, window, "1+1")
+    window.new_chat()
+    assert len(saved_history(window)) == 1
     assert window.current_chat()["messages"] == []
-    assert [m["content"] for m in original["messages"]] == ["Original prompt", "Delayed reply"]
-    assert window.bubbles == []
-
-
-def test_history_list_is_newest_first_and_selects_a_chat(qtbot, with_chats):
-    window = with_chats
-    titles = [window.history_list.item(i).text() for i in range(window.history_list.count())]
-    assert titles == ["Gamma", "Beta", "Alpha"]
-    window.select_chat(window.history_list.item(2))
-    assert window.current_id == "a"
-    assert window.bubbles[0].text == "question for Alpha"
-
-
-def test_rename_changes_only_that_title(with_chats, monkeypatch):
-    window = with_chats
-    monkeypatch.setattr(window, "ask_chat_title", lambda initial: "  My   new   name ")
-    window.rename_chat("a")
-    assert [c["title"] for c in saved(window)] == ["My new name", "Beta", "Gamma"]
-    assert window.current_id == "c"
-
-
-@pytest.mark.parametrize("answer", [None, "", "   ", "Alpha"])
-def test_rename_ignores_cancel_empty_and_unchanged(with_chats, monkeypatch, answer):
-    window = with_chats
-    monkeypatch.setattr(window, "ask_chat_title", lambda initial: answer)
-    window.rename_chat("a")
-    assert window.find_chat("a")["title"] == "Alpha"
-
-
-def test_delete_open_chat_leaves_a_fresh_draft(with_chats, monkeypatch):
-    window = with_chats
-    monkeypatch.setattr(window, "confirm", lambda title, message: True)
-    window.delete_chat("c")
-    assert [c["id"] for c in saved(window)] == ["a", "b"]
-    assert window.current_chat()["messages"] == []
-
-
-def test_delete_is_cancelled_when_not_confirmed(with_chats, monkeypatch):
-    window = with_chats
-    monkeypatch.setattr(window, "confirm", lambda title, message: False)
-    window.delete_chat("a")
-    assert len(window.chats) == 3
-
-
-def test_copy_button_copies_the_original_markdown(qtbot, window):
-    bubble = window.add_bubble("assistant", "**bold** text")
-    qtbot.mouseClick(bubble.copy_btn, Qt.LeftButton)
-    assert QApplication.clipboard().text() == "**bold** text"
-    assert bubble.copy_btn.text() == qt_app.COPIED_TEXT
-
-
-def test_code_block_link_copies_exact_code(window):
-    bubble = window.add_bubble("assistant", "```py\nx = 1\n\n  y = 2\n```")
-    bubble.on_link(QUrl("copy:0"))
-    assert QApplication.clipboard().text() == "x = 1\n\n  y = 2"
-
-
-def test_user_text_is_shown_exactly_as_typed(window):
-    bubble = window.add_bubble("user", "**not bold** <b>tag</b>")
-    assert bubble.body.toPlainText() == "**not bold** <b>tag</b>"
-
-
-def test_bubbles_stay_inside_the_chat_area(qtbot, window):
-    long_word = window.add_bubble("user", "x" * 2000)
-    short = window.add_bubble("assistant", "Hi")
-    limit = qt_app.max_bubble_width(window.scroll.viewport().width())
-    assert long_word.body.width() <= limit
-    assert short.body.width() < 100  # short messages get a small bubble
-    window.resize(900, 700)
-    qtbot.waitUntil(lambda: long_word.body.width() <= qt_app.max_bubble_width(
-        window.scroll.viewport().width()), timeout=2000)
 
 
 def test_theme_and_language_are_saved_and_applied(window):
+    from PySide6.QtWidgets import QApplication
+
     window.toggle_theme()
     assert window.colors is jugnu_core.LIGHT
-    assert jugnu_core.LIGHT["accent"] in window.styleSheet()
+    assert jugnu_core.LIGHT["accent"] in QApplication.instance().styleSheet()
     window.toggle_language()
     assert window.send_btn.text() == get_string("hinglish", "send_btn")
+    assert window.status.text().endswith(get_string("hinglish", "status_ready"))
     assert jugnu_core.load_dark_mode(window.settings_file) is False
     assert jugnu_core.load_language(window.settings_file) == "hinglish"
 
 
-def test_stylesheet_has_no_unfilled_colours(qt_imports):
-    for palette in (jugnu_core.LIGHT, jugnu_core.DARK):
-        assert "$" not in qt_app.build_stylesheet(palette)
+@pytest.mark.parametrize(("name", "palette"), [("light", jugnu_core.LIGHT), ("dark", jugnu_core.DARK)])
+def test_each_stylesheet_uses_only_its_own_palette(name, palette):
+    with open(os.path.join(HERE, f"{name}.qss"), encoding="utf-8") as f:
+        qss = f.read()
+    allowed = {value.upper() for value in palette.values()} | {"#D1FAE5", "#10B981"}  # status and "Copied" greens
+    used = {value.upper() for value in re.findall(r"#[0-9A-Fa-f]{6}\b", qss)}
+    assert used and used <= allowed
+
+
+def test_light_and_dark_stylesheets_have_the_same_rules():
+    def rules(name):
+        with open(os.path.join(HERE, f"{name}.qss"), encoding="utf-8") as f:
+            body = f.read().split("*/", 1)[1]  # skip the header comment, which names the theme
+        return re.sub(r"#[0-9A-Fa-f]{6}\b", "#COLOUR", body)
+    assert rules("light") == rules("dark")
 
 
 def test_voice_buttons_are_disabled_without_tts(window):
     assert not window.voice_btn.isEnabled()
     assert not window.voice_settings_btn.isEnabled()
-    bubble = window.add_bubble("assistant", "Hi")
-    assert not bubble.read_btn.isEnabled()
+    assert not window.add_bubble("assistant", "Hi").read_btn.isEnabled()
+
+
+def test_voice_toggle_is_saved(window):
+    window.toggle_voice()
+    assert window.voice_btn.text() == window.t("voice_on")
+    assert jugnu_core.load_voice_enabled(window.settings_file) is True
+
+
+def test_voice_settings_dialog_updates_and_saves_values(window):
+    window.tts.available = True
+    window.tts.voices = [("v1", "Alex"), ("v2", "Alex"), ("v3", "Samantha")]
+    window.open_voice_settings()
+    dialog = window.voice_dialog
+    names = [dialog.voice.itemText(i) for i in range(dialog.voice.count())]
+    assert names == [window.t("voice_default_name"), "Alex", "Alex (2)", "Samantha"]
+    dialog.rate.setValue(200)
+    dialog.volume.setValue(40)
+    dialog.voice.setCurrentIndex(3)
+    dialog.on_voice(3)
+    dialog.close()
+    assert jugnu_core.load_voice_prefs(window.settings_file) == (200, 0.4, "v3")
+    assert dialog.rate_label.text() == window.t("voice_rate_label", value=200)
+
+
+def test_stop_button_follows_speech(window):
+    window.tts.speaking = True
+    window.poll_speech()
+    assert window.stop_btn.isVisibleTo(window)
+    window.tts.speaking = False
+    window.poll_speech()
+    assert not window.stop_btn.isVisibleTo(window)

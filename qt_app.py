@@ -1,15 +1,14 @@
-"""JUGNU's desktop window, built with PySide6 and themed with Qt Style Sheets (jugnu.qss).
+"""JUGNU's desktop window, built with PySide6 and themed with Qt Style Sheets.
 
 All the logic (history, settings, local answers, the Ollama client) lives in jugnu_core.py;
-this file only draws it. Run it with:  python qt_app.py
+this file only draws it. The theme is in light.qss and dark.qss.
+Run it with:  python qt_app.py
 """
 import math
 import os
 import sys
-import threading
-from string import Template
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QThread, Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QKeySequence, QPixmap, QShortcut, QTextOption
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFrame, QHBoxLayout, QInputDialog,
                                QLabel, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
@@ -23,16 +22,15 @@ from strings import get_string, next_language
 from tts import RATE_MAX, RATE_MIN, TTSManager
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STYLE_FILE = os.path.join(HERE, "jugnu.qss")
 BUBBLE_PT = 10        # chat text size, in points
 COPY_TEXT = "⧉ Copy"
 COPIED_TEXT = "✓ Copied!"
 
 
-def build_stylesheet(colors):
-    """jugnu.qss with every $name replaced by that colour from the palette."""
-    with open(STYLE_FILE, encoding="utf-8") as f:
-        return Template(f.read()).safe_substitute(colors)
+def load_stylesheet(dark_mode):
+    """The whole theme: dark.qss or light.qss, from beside this file."""
+    with open(os.path.join(HERE, "dark.qss" if dark_mode else "light.qss"), encoding="utf-8") as f:
+        return f.read()
 
 
 def max_bubble_width(viewport_width):
@@ -46,19 +44,20 @@ def repolish(widget):
     widget.style().polish(widget)
 
 
-class Bridge(QObject):
-    """Brings results from background threads back to the GUI thread.
+class Task(QThread):
+    """Runs one blocking call (an Ollama request) off the GUI thread.
 
-    A signal emitted on another thread is queued and its slot runs on the GUI thread,
-    so the worker never touches a widget.
+    `done` is emitted from the worker thread; Qt queues it, so the connected slot runs on the
+    GUI thread. The work itself never touches a widget.
     """
-    answered = Signal(str, object, bool)  # chat id, answer (or None), is_error
-    warmed = Signal(bool)
+    done = Signal(object)
 
+    def __init__(self, work, parent=None):
+        super().__init__(parent)
+        self.work = work
 
-def run_in_background(target, *args):
-    # A daemon thread, so closing the window never waits for (or crashes on) a slow request.
-    threading.Thread(target=target, args=args, daemon=True).start()
+    def run(self):
+        self.done.emit(self.work())
 
 
 class InputBox(QPlainTextEdit):
@@ -124,13 +123,14 @@ class Bubble(QFrame):
         layout.setSpacing(4)
         header = QHBoxLayout()
         header.setSpacing(6)
-        name = QLabel(app.t("you_label") if is_user else "🤖 JUGNU")
-        name.setObjectName("bubbleName")
-        header.addWidget(name)
+        self.name_label = QLabel(app.t("you_label") if is_user else "🤖 JUGNU")
+        self.name_label.setObjectName("bubbleName")
+        header.addWidget(self.name_label)
+        self.time_label = None
         if timestamp:
-            time_label = QLabel(timestamp)
-            time_label.setObjectName("bubbleTime")
-            header.addWidget(time_label)
+            self.time_label = QLabel(timestamp)
+            self.time_label.setObjectName("bubbleTime")
+            header.addWidget(self.time_label)
         header.addStretch(1)
         self.copy_btn = self.small_button(COPY_TEXT, self.copy_message)
         header.addWidget(self.copy_btn)
@@ -146,9 +146,7 @@ class Bubble(QFrame):
         if is_user:
             self.body.setPlainText(text)  # what you type is always shown exactly as typed
         else:
-            html, self.codes = render_html(text, app.colors, mono=app.mono_family(), base_pt=BUBBLE_PT,
-                                           copy_label=app.t("code_copy_btn"))
-            self.body.setHtml(html)
+            self.show_markdown(app.t("code_copy_btn"))
         self.body.anchorClicked.connect(self.on_link)
         self.body.copy_all.connect(self.copy_message)
         layout.addWidget(self.body)
@@ -159,6 +157,16 @@ class Bubble(QFrame):
         button.setCursor(Qt.PointingHandCursor)
         button.clicked.connect(slot)
         return button
+
+    def show_markdown(self, copy_label):
+        """Show the reply as styled Markdown. If anything goes wrong, show the plain message instead."""
+        try:
+            html, self.codes = render_html(self.text, self.app.colors, mono=self.app.mono_family(),
+                                           base_pt=BUBBLE_PT, copy_label=copy_label)
+            self.body.setHtml(html)
+        except Exception:
+            self.codes = []
+            self.body.setPlainText(self.text)
 
     def fit(self, max_width):
         self.body.fit(max_width)
@@ -182,15 +190,8 @@ class Bubble(QFrame):
             index = int(target[5:])
             if 0 <= index < len(self.codes):
                 QApplication.clipboard().setText(self.codes[index])
-                html, _ = render_html(self.text, self.app.colors, mono=self.app.mono_family(),
-                                      base_pt=BUBBLE_PT, copy_label=self.app.t("code_copied_btn"))
-                self.body.setHtml(html)
-                QTimer.singleShot(1500, self, self.reset_code_links)
-
-    def reset_code_links(self):
-        html, _ = render_html(self.text, self.app.colors, mono=self.app.mono_family(),
-                              base_pt=BUBBLE_PT, copy_label=self.app.t("code_copy_btn"))
-        self.body.setHtml(html)
+                self.show_markdown(self.app.t("code_copied_btn"))
+                QTimer.singleShot(1500, self, lambda: self.show_markdown(self.app.t("code_copy_btn")))
 
 
 class VoiceSettingsDialog(QDialog):
@@ -315,9 +316,8 @@ class JugnuWindow(QMainWindow):
         self.bubbles = []
         self._stick_to_bottom = False
 
-        self.bridge = Bridge()
-        self.bridge.answered.connect(self.finish_answer)
-        self.bridge.warmed.connect(lambda ok: self.set_status("status_ready" if ok else "status_offline"))
+        self.tasks = []  # background requests that are still running
+        self.closed = False
 
         self.build_ui()
         if self.chats:
@@ -332,7 +332,7 @@ class JugnuWindow(QMainWindow):
         self.speech_timer = QTimer(self, interval=200)
         self.speech_timer.timeout.connect(self.poll_speech)
         self.speech_timer.start()
-        QTimer.singleShot(250, self.warm_up)
+        QTimer.singleShot(250, self, self.warm_up)
 
     # ---------- Layout ----------
     def build_ui(self):
@@ -464,7 +464,7 @@ class JugnuWindow(QMainWindow):
         return core.DARK if self.dark_mode else core.LIGHT
 
     def apply_theme(self):
-        self.setStyleSheet(build_stylesheet(self.colors))
+        QApplication.instance().setStyleSheet(load_stylesheet(self.dark_mode))
         self.theme_btn.setText(self.theme_button_text())
         self.display_chat()  # reply bubbles carry theme colours in their rich text
 
@@ -616,12 +616,14 @@ class JugnuWindow(QMainWindow):
     def show_chat_menu(self, pos):
         item = self.history_list.itemAt(pos)
         if item is None:
-            return
+            return None
         chat_id = item.data(Qt.UserRole)  # the menu acts on the chat that was clicked, not on its row
         menu = QMenu(self)
+        menu.setAttribute(Qt.WA_DeleteOnClose)
         menu.addAction(self.t("chat_menu_rename"), lambda: self.rename_chat(chat_id))
         menu.addAction(self.t("chat_menu_delete"), lambda: self.delete_chat(chat_id))
-        menu.exec(self.history_list.viewport().mapToGlobal(pos))
+        menu.popup(self.history_list.viewport().mapToGlobal(pos))
+        return menu
 
     def ask_chat_title(self, initial):
         """Returns the text entered, or None if it was cancelled."""
@@ -743,8 +745,25 @@ class JugnuWindow(QMainWindow):
             bubble.fit(width)
 
     # ---------- Sending ----------
+    def start_task(self, work, slot):
+        """Run `work()` on a QThread; `slot(result)` then runs on the GUI thread."""
+        self.tasks = [task for task in self.tasks if task.isRunning()]
+        task = Task(work)
+        task.done.connect(slot)
+        self.tasks.append(task)
+        task.start()
+
+    def wait_for_tasks(self, msecs):
+        """Wait up to `msecs` for running requests. True when none is left."""
+        return all(task.wait(msecs) for task in self.tasks)
+
     def warm_up(self):
-        run_in_background(lambda: self.bridge.warmed.emit(core.warm_up()))
+        if self.closed:
+            return  # the window was closed before the delayed warm-up started
+        self.start_task(core.warm_up, self.on_warmed)
+
+    def on_warmed(self, ok):
+        self.set_status("status_ready" if ok else "status_offline")
 
     def send_message(self):
         if self.busy:
@@ -778,14 +797,16 @@ class JugnuWindow(QMainWindow):
         if answer is not None:
             self.finish_answer(chat["id"], answer, False)
             return
-        # Send a copy, so the request never reads the list while the GUI changes it.
-        snapshot = {"messages": [dict(m) for m in chat["messages"]]}
-        run_in_background(self.ask_ollama, chat["id"], snapshot, self.language)
+        self.ask_ollama(chat["id"])
 
-    def ask_ollama(self, chat_id, chat, language):
-        # Background thread: no widgets here. The result goes back through a signal.
-        answer, is_error = core.ask_ollama(chat, language)
-        self.bridge.answered.emit(chat_id, answer, is_error)
+    def ask_ollama(self, chat_id):
+        # The worker gets a copy, so it never reads the list while the GUI changes it.
+        chat = {"messages": [dict(m) for m in self.find_chat(chat_id)["messages"]]}
+        language = self.language  # The prompt and any error text use the language chosen at send time.
+        self.start_task(lambda: (chat_id, *core.ask_ollama(chat, language)), self.on_answer)
+
+    def on_answer(self, result):
+        self.finish_answer(*result)
 
     def finish_answer(self, chat_id, answer, is_error=False):
         chat = self.find_chat(chat_id)  # may be gone if it was deleted while the request ran
@@ -808,6 +829,7 @@ class JugnuWindow(QMainWindow):
         self.refresh_history_list()
 
     def closeEvent(self, event):
+        self.closed = True
         self.speech_timer.stop()
         self.tts.shutdown()
         super().closeEvent(event)
@@ -830,9 +852,15 @@ def main():
     try:
         window = JugnuWindow()
         window.show()
-        return app.exec()
+        code = app.exec()
+        finished = window.wait_for_tasks(2000)
     finally:
         lock.release()
+    if not finished:
+        # A request is still waiting on Ollama. A running QThread aborts the process when it is
+        # destroyed, so leave right away; the history was already saved when the message was sent.
+        os._exit(code)
+    return code
 
 
 if __name__ == "__main__":

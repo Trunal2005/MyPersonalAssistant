@@ -1,11 +1,12 @@
 """Request failures stay visible while model context contains conversation turns."""
-
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 import requests
 
-import desktop_app as desktop
+import jugnu_core
+from conftest import make_chat
+from strings import get_string
 
 
 def response(body, status=200):
@@ -16,22 +17,22 @@ def response(body, status=200):
 
 
 @pytest.fixture
-def app(tmp_path, monkeypatch):
-    monkeypatch.setattr(desktop, "HISTORY_FILE", tmp_path / "history.json")
-    app = desktop.JugnuApp.__new__(desktop.JugnuApp)
-    app.language = "en"
-    app.current_id = "chat"
-    app.draft_chat = None
-    app.voice_enabled = False
-    app.chats = [{"id": "chat", "title": "Chat", "messages": [
+def app(window):
+    window.chats = [make_chat("chat", "Chat", [
         {"role": "user", "content": "Project Cedar"},
         {"role": "assistant", "content": "Acknowledged Cedar"},
-    ]}]
-    for name in ("root", "add_bubble", "canvas", "send_btn", "set_status",
-                 "refresh_history_list"):
-        setattr(app, name, Mock())
-    app.root.after.side_effect = lambda delay, callback: callback()
-    return app
+    ])]
+    window.current_id = "chat"
+    window.draft_chat = None
+    window.display_chat()
+    return window
+
+
+def ask(qtbot, app):
+    """Ask the model for a reply to the open chat and wait for it."""
+    app.busy = True
+    app.ask_ollama("chat")
+    qtbot.waitUntil(lambda: not app.busy, timeout=3000)
 
 
 @pytest.mark.parametrize("failure", [
@@ -43,24 +44,23 @@ def app(tmp_path, monkeypatch):
     response(b'{"message":null}'),
     response(b'{"message":{"content":"  "}}'),
 ])
-def test_failure_notice_survives_reload_without_consuming_context(app, failure):
-    with patch.object(desktop.requests, "post", side_effect=[failure] * 5):
+def test_failure_notice_survives_reload_without_consuming_context(qtbot, app, failure):
+    bubbles_before = len(app.bubbles)
+    with patch.object(jugnu_core.requests, "post", side_effect=[failure] * 5):
         for _ in range(5):
             app.chats[0]["messages"].append({"role": "user", "content": "Try again"})
-            app.busy = True
-            app.ask_ollama("chat")
-            assert not app.busy
-            app.send_btn.configure.assert_called_with(state="normal")
+            ask(qtbot, app)
+            assert app.send_btn.isEnabled()
             assert app.chats[0]["messages"][-1].get("is_error") is True
-    app.chats = app.load_history()
+    app.chats = jugnu_core.load_history(app.history_file)
     notices = [m for m in app.chats[0]["messages"] if m.get("is_error")]
     assert len(notices) == 5
-    assert app.add_bubble.call_count == 5
+    assert len(app.bubbles) == bubbles_before + 5
     app.chats[0]["messages"].append({"role": "user", "content": "Which project?"})
-    with patch.object(desktop.requests, "post", return_value=response(
+    with patch.object(jugnu_core.requests, "post", return_value=response(
         b'{"message":{"content":"Project Cedar"}}'
     )) as post:
-        app.ask_ollama("chat")
+        ask(qtbot, app)
     context = post.call_args.kwargs["json"]["messages"][1:]
     assert len(context) == 8
     assert [m["content"] for m in context if m["role"] == "assistant"] == ["Acknowledged Cedar"]
@@ -69,29 +69,27 @@ def test_failure_notice_survives_reload_without_consuming_context(app, failure):
     assert not app.chats[0]["messages"][-1].get("is_error", False)
 
 
-def test_legacy_messages_are_retained_without_matching_error_wording(app):
+def test_legacy_messages_are_retained_without_matching_error_wording(qtbot, app):
     app.chats[0]["messages"] = [
-        {"role": "assistant", "content": desktop.get_string("en", "error_timeout")},
+        {"role": "assistant", "content": get_string("en", "error_timeout")},
         {"role": "user", "content": "Explain that message"},
     ]
     app.save_history()
-    app.chats = app.load_history()
-    with patch.object(desktop.requests, "post", return_value=response(
+    app.chats = jugnu_core.load_history(app.history_file)
+    with patch.object(jugnu_core.requests, "post", return_value=response(
         b'{"message":{"content":"Explanation"}}'
     )) as post:
-        app.ask_ollama("chat")
-    assert post.call_args.kwargs["json"]["messages"][1]["content"] == desktop.get_string(
-        "en", "error_timeout"
-    )
+        ask(qtbot, app)
+    assert post.call_args.kwargs["json"]["messages"][1]["content"] == get_string("en", "error_timeout")
 
 
-def test_context_limit_applies_after_filtering(app):
+def test_context_limit_applies_after_filtering(qtbot, app):
     valid = [{"role": "user", "content": str(i)} for i in range(12)]
     app.chats[0]["messages"] = valid + [
         {"role": "assistant", "content": "notice", "is_error": True}
     ] * 10
-    with patch.object(desktop.requests, "post", return_value=response(
+    with patch.object(jugnu_core.requests, "post", return_value=response(
         b'{"message":{"content":"OK"}}'
     )) as post:
-        app.ask_ollama("chat")
+        ask(qtbot, app)
     assert post.call_args.kwargs["json"]["messages"][1:] == valid[-10:]

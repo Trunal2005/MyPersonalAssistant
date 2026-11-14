@@ -1,0 +1,254 @@
+/* JUGNU's dark theme (Qt Style Sheets). qt_app.py applies it with app.setStyleSheet().
+   light.qss has the same rules with the light colours, so change both files together.
+   Colours match the DARK palette in jugnu_core.py, which the chat bubbles' Markdown uses. */
+
+QMainWindow, QDialog, #content, #messages {
+    background: #191728;
+}
+QWidget {
+    color: #F4EEFF;
+}
+QToolTip {
+    background: #28223D;
+    color: #F4EEFF;
+    border: 1px solid #463A66;
+}
+
+/* ---------- Buttons ---------- */
+QPushButton {
+    background: #8B6CF0;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 14px;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background: #D946A6;
+}
+QPushButton:pressed {
+    background: #8B6CF0;
+}
+QPushButton:disabled {
+    background: #463A66;
+    color: #B7A9D8;
+}
+QPushButton:focus {
+    outline: none;
+}
+QPushButton[variant="danger"] {
+    background: #4B2A40;
+    color: #D946A6;
+}
+QPushButton[variant="danger"]:hover {
+    color: #F4EEFF;
+}
+QPushButton[variant="stop"] {
+    background: #D946A6;
+    padding: 4px 12px;
+}
+QPushButton[variant="stop"]:hover {
+    background: #4B2A40;
+    color: #D946A6;
+}
+/* Small text buttons inside a chat bubble (Copy, Read aloud). */
+QPushButton[variant="ghost"] {
+    background: transparent;
+    color: #B7A9D8;
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: 8pt;
+}
+QPushButton[variant="ghost"]:hover {
+    background: #463A66;
+    color: #8B6CF0;
+}
+QPushButton[variant="ghost"]:disabled {
+    background: transparent;
+    color: #463A66;
+}
+QPushButton[variant="ghost"][state="copied"] {
+    color: #10B981;
+}
+
+/* ---------- Sidebar ---------- */
+#sidebar {
+    background: #211D35;
+}
+#brand {
+    color: #8B6CF0;
+    font-size: 22pt;
+    font-weight: 700;
+}
+#tagline, #historyLabel {
+    color: #B7A9D8;
+    font-size: 9pt;
+}
+#historyLabel {
+    font-weight: 600;
+}
+#historyList {
+    background: transparent;
+    border: none;
+    outline: none;
+    font-size: 9pt;
+}
+#historyList::item {
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+#historyList::item:hover {
+    background: #463A66;
+}
+#historyList::item:selected {
+    background: #8B6CF0;
+    color: white;
+}
+
+/* ---------- Header ---------- */
+#header {
+    background: #8B6CF0;
+}
+#headerTitle {
+    color: white;
+    font-size: 15pt;
+    font-weight: 700;
+}
+#status {
+    color: #D1FAE5;
+    font-size: 9pt;
+    font-weight: 600;
+}
+
+/* ---------- Chat ---------- */
+#chatScroll {
+    background: #191728;
+    border: none;
+}
+#bubble[role="user"] {
+    background: #34365A;
+    border-radius: 12px;
+}
+#bubble[role="assistant"] {
+    background: #2A2440;
+    border-radius: 12px;
+}
+#bubbleName {
+    color: #8B6CF0;
+    font-size: 9pt;
+    font-weight: 600;
+}
+#bubbleTime {
+    color: #B7A9D8;
+    font-size: 8pt;
+}
+#bubbleText {
+    background: transparent;
+    border: none;
+    selection-background-color: #8B6CF0;
+    selection-color: white;
+}
+#welcomeTitle {
+    font-size: 23pt;
+    font-weight: 700;
+}
+#welcomeTagline {
+    color: #B7A9D8;
+    font-size: 12pt;
+}
+#welcomePrompt, #welcomeEmoji {
+    color: #8B6CF0;
+    font-size: 12pt;
+}
+#welcomeEmoji {
+    font-size: 64pt;
+}
+
+/* ---------- Input and dialogs ---------- */
+QPlainTextEdit, QLineEdit {
+    background: #2A2440;
+    color: #F4EEFF;
+    border: 1px solid #463A66;
+    border-radius: 10px;
+    padding: 8px;
+    selection-background-color: #8B6CF0;
+    selection-color: white;
+}
+QPlainTextEdit:focus, QLineEdit:focus {
+    border: 1px solid #8B6CF0;
+}
+QLabel[variant="field"] {
+    font-weight: 600;
+}
+QComboBox {
+    background: #28223D;
+    color: #F4EEFF;
+    border: 1px solid #463A66;
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+QComboBox:hover {
+    border: 1px solid #8B6CF0;
+}
+QComboBox QAbstractItemView {
+    background: #28223D;
+    color: #F4EEFF;
+    selection-background-color: #8B6CF0;
+    selection-color: white;
+    border: 1px solid #463A66;
+}
+QSlider::groove:horizontal {
+    background: #463A66;
+    height: 6px;
+    border-radius: 3px;
+}
+QSlider::sub-page:horizontal {
+    background: #8B6CF0;
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #8B6CF0;
+    width: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+}
+QSlider::handle:horizontal:hover {
+    background: #D946A6;
+}
+QMenu {
+    background: #28223D;
+    color: #F4EEFF;
+    border: 1px solid #463A66;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 6px 18px;
+    border-radius: 4px;
+}
+QMenu::item:selected {
+    background: #8B6CF0;
+    color: white;
+}
+QMenu::item:disabled {
+    color: #B7A9D8;
+}
+
+/* ---------- Scroll bars ---------- */
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: #463A66;
+    border-radius: 3px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #B7A9D8;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+    height: 0;
+}

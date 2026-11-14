@@ -1,6 +1,6 @@
 """Offline text-to-speech for JUGNU.
 
-All speech runs on one background worker thread, so the Tkinter GUI never
+All speech runs on one background worker thread, so the GUI never
 freezes. The public methods (speak / stop / shutdown) are safe to call from the
 GUI thread; the worker never touches any widget.
 

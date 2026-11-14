@@ -40,7 +40,7 @@ Contributors can earn points on the leaderboard based on merged PRs tagged with:
 ## 🛠️ Tech Stack
 
 - **Language**: Python
-- **GUI**: PySide6 (Qt for Python), themed with Qt Style Sheets (`jugnu.qss`). The older Tkinter window (`desktop_app.py`) still works while the migration finishes ([#43](https://github.com/kismatkumari56/MyPersonalAssistant/issues/43)).
+- **GUI**: PySide6 (Qt for Python), themed with Qt Style Sheets (`light.qss` / `dark.qss`)
 - **LLM Engine**: Ollama (Llama 3.2 3B)
 - **Networking**: Requests, JSON
 
@@ -54,19 +54,19 @@ Download and install Ollama from [ollama.com](https://ollama.com/).
 
 ### 3. Download the AI Model
 Open your terminal and run:
-`ash
+```bash
 ollama pull llama3.2:3b
-`
+```
 
 ### 4. Install Dependencies
-`ash
-pip install requests
-`
+```bash
+pip install -r requirements.txt
+```
 
 ### 5. Run JUGNU
-`ash
-python desktop_app.py
-`
+```bash
+python qt_app.py
+```
 
 ---
 
@@ -106,7 +106,7 @@ python -m pytest tests/test_time_question.py -v
 
 The test suite covers calculator operations, error handling, unsupported expressions, and time/date question detection.
 
-**Note:** Running the tests does not require starting the Ollama server. The Qt tests (`tests/test_qt_app.py`) run offscreen with `pytest-qt`, so no window opens; the app's logic (`jugnu_core.py`) is tested without any GUI.
+**Note:** Running the tests does not require starting the Ollama server. The window tests run offscreen with `pytest-qt`, so no window opens; the app's logic (`jugnu_core.py`) is tested without any GUI.
 
 
 ## 👩‍💻 Project Admin
