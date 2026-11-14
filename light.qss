@@ -51,6 +51,39 @@ QPushButton[variant="stop"]:hover {
     background: #FCE7F3;
     color: #EC4899;
 }
+/* Document attachment */
+QPushButton#attachBtn {
+    background: #EEE8FF;
+    color: #27213B;
+    font-size: 14pt;
+    padding: 0;
+}
+QPushButton#attachBtn:hover {
+    background: #D9CFF5;
+    color: #8B5CF6;
+}
+QFrame#attachmentChip {
+    background: #EEE8FF;
+    border-radius: 6px;
+    border: 1px solid #D9CFF5;
+}
+QFrame#attachmentChip QLabel {
+    color: #27213B;
+    font-size: 8.5pt;
+    font-weight: 500;
+}
+QFrame#attachmentChip QPushButton {
+    background: transparent;
+    color: #756B91;
+    font-size: 8pt;
+    font-weight: bold;
+    border-radius: 9px;
+    padding: 0;
+}
+QFrame#attachmentChip QPushButton:hover {
+    background: #FCE7F3;
+    color: #EC4899;
+}
 /* Small text buttons inside a chat bubble (Copy, Read aloud). */
 QPushButton[variant="ghost"] {
     background: transparent;

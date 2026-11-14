@@ -17,6 +17,12 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QWidget)
 
 import jugnu_core as core
+from context_ingest import (
+    AttachedDocument,
+    AttachmentError,
+    assemble_prompt_with_attachments,
+    ingest_file,
+)
 from export_manager import export_chat
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import plain_text, render_html
@@ -321,6 +327,7 @@ class JugnuWindow(QMainWindow):
 
         self.tasks = []  # background requests that are still running
         self.closed = False
+        self.attachments: list[AttachedDocument] = []
 
         self.build_ui()
         if self.chats:
@@ -413,9 +420,27 @@ class JugnuWindow(QMainWindow):
         self.scroll.verticalScrollBar().rangeChanged.connect(self.on_scroll_range)
         column.addWidget(self.scroll, 1)
 
+        bottom_container = QVBoxLayout()
+        bottom_container.setContentsMargins(0, 0, 0, 0)
+        bottom_container.setSpacing(4)
+
+        # Attachment chips container
+        self.attachments_container = QWidget()
+        self.attachments_layout = QHBoxLayout(self.attachments_container)
+        self.attachments_layout.setContentsMargins(12, 0, 12, 0)
+        self.attachments_layout.setSpacing(6)
+        self.attachments_container.setVisible(False)
+        bottom_container.addWidget(self.attachments_container)
+
         bottom = QHBoxLayout()
         bottom.setContentsMargins(12, 0, 12, 12)
         bottom.setSpacing(10)
+        self.attach_btn = QPushButton("📎")
+        self.attach_btn.setObjectName("attachBtn")
+        self.attach_btn.setCursor(Qt.PointingHandCursor)
+        self.attach_btn.setFixedSize(48, 48)
+        self.attach_btn.clicked.connect(self.pick_attachments)
+        bottom.addWidget(self.attach_btn)
         self.input_box = InputBox()
         self.input_box.setFixedHeight(64)
         self.input_box.submitted.connect(self.send_message)
@@ -425,7 +450,8 @@ class JugnuWindow(QMainWindow):
         self.send_btn.setMinimumHeight(48)
         self.send_btn.clicked.connect(self.send_message)
         bottom.addWidget(self.send_btn)
-        column.addLayout(bottom)
+        bottom_container.addLayout(bottom)
+        column.addLayout(bottom_container)
         main.addWidget(content, 1)
 
         QShortcut(QKeySequence("Ctrl+N"), self, self.new_chat)
@@ -515,6 +541,7 @@ class JugnuWindow(QMainWindow):
         self.theme_btn.setText(self.theme_button_text())
         self.header_title.setText(self.t("header_title"))
         self.send_btn.setText(self.t("send_btn"))
+        self.attach_btn.setToolTip(self.t("attach_file_btn"))
         if self.voice_dialog is not None:
             self.voice_dialog.retranslate()
         key, kwargs = self._status
@@ -637,6 +664,8 @@ class JugnuWindow(QMainWindow):
     def new_chat(self):
         # A blank chat is temporary. It must not create a history entry until a message is sent.
         self.tts.stop()
+        self.attachments = []
+        self.render_attachment_chips()
         self.make_draft()
         self.refresh_history_list()
         self.display_chat()
@@ -761,6 +790,8 @@ class JugnuWindow(QMainWindow):
         if getattr(self, "is_streaming", False) and getattr(self, "current_stream_chat_id", None) == chat.get("id"):
             self.stop_generating()
         self.tts.stop()
+        self.attachments = []
+        self.render_attachment_chips()
         self.chats = [saved for saved in self.chats if saved.get("id") != chat.get("id")]
         self.make_draft()
         self.save_history()
@@ -850,11 +881,71 @@ class JugnuWindow(QMainWindow):
     def on_warmed(self, ok):
         self.set_status("status_ready" if ok else "status_offline")
 
+    # ---------- Attachments ----------
+    def pick_attachments(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            self.t("attach_dialog_title"),
+            "",
+            "All Files (*);;Text/Code Files (*.py *.js *.ts *.txt *.md *.json *.html *.css)",
+        )
+        if not file_paths:
+            return
+        for file_path in file_paths:
+            try:
+                if any(os.path.abspath(a.path) == os.path.abspath(file_path) for a in self.attachments):
+                    continue
+                doc = ingest_file(file_path)
+                self.attachments.append(doc)
+            except AttachmentError as err:
+                QMessageBox.warning(self, self.t("attach_error_title"), str(err))
+        self.render_attachment_chips()
+
+    def remove_attachment(self, index):
+        if 0 <= index < len(self.attachments):
+            del self.attachments[index]
+        self.render_attachment_chips()
+
+    def render_attachment_chips(self):
+        while self.attachments_layout.count():
+            item = self.attachments_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        if not self.attachments:
+            self.attachments_container.setVisible(False)
+            return
+
+        self.attachments_container.setVisible(True)
+        for idx, doc in enumerate(self.attachments):
+            chip = QFrame()
+            chip.setObjectName("attachmentChip")
+            chip_layout = QHBoxLayout(chip)
+            chip_layout.setContentsMargins(8, 4, 8, 4)
+            chip_layout.setSpacing(6)
+
+            trunc_tag = " (truncated)" if doc.is_truncated else ""
+            label = QLabel(f"📄 {doc.filename} ({doc.formatted_size}){trunc_tag}")
+            chip_layout.addWidget(label)
+
+            del_btn = QPushButton("✕")
+            del_btn.setFixedSize(18, 18)
+            del_btn.setCursor(Qt.PointingHandCursor)
+            del_btn.setToolTip("Remove attachment")
+            del_btn.clicked.connect(lambda checked=False, i=idx: self.remove_attachment(i))
+            chip_layout.addWidget(del_btn)
+
+            self.attachments_layout.addWidget(chip)
+
+        self.attachments_layout.addStretch(1)
+
     def send_message(self):
         if self.busy:
             return
         user_text = self.input_box.toPlainText().strip()
-        if not user_text:
+        has_attachments = bool(self.attachments)
+        if not user_text and not has_attachments:
             return
         self.tts.stop()  # A new message interrupts any reply still being read aloud.
         chat = self.current_chat()
@@ -865,11 +956,21 @@ class JugnuWindow(QMainWindow):
             self.chats.append(self.draft_chat)
             self.draft_chat = None
         if chat.get("title") == core.NEW_CHAT_TITLE:
-            chat["title"] = user_text[:core.MAX_LIST_TITLE]
+            default_title = user_text if user_text else (f"Attachment: {self.attachments[0].filename}" if self.attachments else "Chat")
+            chat["title"] = default_title[:core.MAX_LIST_TITLE]
         time_now = core.message_time_text()
-        chat["messages"].append({"role": "user", "content": user_text, "time": time_now})
+
+        prompt_with_attachments = (
+            assemble_prompt_with_attachments(user_text, self.attachments)
+            if has_attachments
+            else user_text
+        )
+        self.attachments = []
+        self.render_attachment_chips()
+
+        chat["messages"].append({"role": "user", "content": prompt_with_attachments, "time": time_now})
         self.input_box.clear()
-        self.add_bubble("user", user_text, timestamp=time_now)
+        self.add_bubble("user", prompt_with_attachments, timestamp=time_now)
         self.scroll_to_bottom()
         self.refresh_history_list()
         self.save_history()
@@ -878,10 +979,11 @@ class JugnuWindow(QMainWindow):
         self.set_status("status_thinking")
 
         # Clock/date and arithmetic questions are answered locally—no model call required.
-        answer = core.local_answer(user_text, self.language)
-        if answer is not None:
-            self.finish_answer(chat["id"], answer, False)
-            return
+        if not has_attachments:
+            answer = core.local_answer(user_text, self.language)
+            if answer is not None:
+                self.finish_answer(chat["id"], answer, False)
+                return
         self.ask_ollama(chat["id"])
 
     def create_streaming_bubble(self, chat_id, timestamp=None):

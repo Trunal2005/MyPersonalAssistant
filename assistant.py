@@ -4,6 +4,7 @@ Only the terminal screen lives here: the greeting, the commands, and the wording
 of the messages. Everything shared with the desktop app (the model, the clock, the
 calculator and the request to Ollama) comes from core.py.
 """
+import argparse
 import json
 from pathlib import Path
 
@@ -16,6 +17,12 @@ from core import (
     chat,
     is_time_question,
     local_now,
+)
+from context_ingest import (
+    AttachedDocument,
+    AttachmentError,
+    assemble_prompt_with_attachments,
+    ingest_file,
 )
 from export_manager import export_chat
 from search_engine import SearchEngine
@@ -74,8 +81,13 @@ def get_date():
 
 # ---------------- AI CHAT ----------------
 
-def ask_ai(user_message):
-    result = chat(build_messages(SYSTEM_PROMPT, [{"role": "user", "content": user_message}]))
+def ask_ai(user_message, attachments=None):
+    prompt_text = (
+        assemble_prompt_with_attachments(user_message, attachments)
+        if attachments
+        else user_message
+    )
+    result = chat(build_messages(SYSTEM_PROMPT, [{"role": "user", "content": prompt_text}]))
 
     if result.ok:
         return result.answer
@@ -114,21 +126,35 @@ def show_help():
     print("1. time                  - Show current time")
     print("2. date                  - Show today's date")
     print("3. calculate <expr>      - Calculate a mathematical expression")
-    print("4. /search <query>       - Search across conversation history")
-    print("5. /export [id] <format> - Export chat to md, html, json, or txt")
-    print("6. /chats                - List all saved conversation history")
-    print("7. help                  - Show available commands")
-    print("8. bye                   - Exit the assistant")
+    print("4. /attach <path>        - Attach a local code or text file")
+    print("5. /files                - List attached files")
+    print("6. /detach               - Clear all attachments")
+    print("7. /search <query>       - Search across conversation history")
+    print("8. /export [id] <format> - Export chat to md, html, json, or txt")
+    print("9. /chats                - List all saved conversation history")
+    print("10. help                 - Show available commands")
+    print("11. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
 # ---------------- MAIN ASSISTANT ----------------
 
-def run_assistant():
+def run_assistant(initial_files=None):
+    active_attachments: list[AttachedDocument] = []
+    if initial_files:
+        for file_path in initial_files:
+            try:
+                doc = ingest_file(file_path)
+                active_attachments.append(doc)
+                print(f"[Attached: {doc.filename} ({doc.formatted_size})]")
+            except AttachmentError as err:
+                print(f"[Attachment error: {err}]")
+
     greet()
 
     while True:
-        user_input = input("\nYou: ").strip()
+        prompt_prefix = f"\nYou ({len(active_attachments)} attached): " if active_attachments else "\nYou: "
+        user_input = input(prompt_prefix).strip()
 
         if not user_input:
             continue
@@ -156,6 +182,36 @@ def run_assistant():
         elif command.startswith("calculate "):
             expression = user_input[10:].strip()
             print("\nAssistant:", calculate(expression))
+
+        # Attach local file
+        elif command.startswith("/attach ") or command.startswith("/file "):
+            parts = user_input.split(maxsplit=1)
+            target = parts[1].strip() if len(parts) > 1 else ""
+            if not target:
+                print("\nAssistant: Please provide a file path, e.g. /attach path/to/file.py")
+            else:
+                try:
+                    doc = ingest_file(target)
+                    active_attachments.append(doc)
+                    print(f"\nAssistant: Attached '{doc.filename}' ({doc.formatted_size}, {doc.language}).")
+                except AttachmentError as err:
+                    print(f"\nAssistant: Could not attach file: {err}")
+
+        # List attached files
+        elif command in ["/files", "/attachments"]:
+            if not active_attachments:
+                print("\nAssistant: No files attached.")
+            else:
+                print("\nAttached files:")
+                for idx, doc in enumerate(active_attachments, 1):
+                    trunc = " (truncated)" if doc.is_truncated else ""
+                    print(f"{idx}. {doc.filename} ({doc.formatted_size}, {doc.language}){trunc}")
+
+        # Detach all attachments
+        elif command in ["/detach", "/clear-attachments"]:
+            count = len(active_attachments)
+            active_attachments.clear()
+            print(f"\nAssistant: Cleared {count} attached file(s).")
 
         # Search conversations
         elif command.startswith("/search"):
@@ -217,12 +273,16 @@ def run_assistant():
 
         # General AI question
         else:
-            print("\nAssistant: ", end="", flush=True)
-            answer = ask_ai(user_input)
-            print(answer)
+            print("\nAssistant: Thinking...")
+            answer = ask_ai(user_input, attachments=active_attachments)
+            print("\nAssistant:", answer)
+            active_attachments.clear()
 
 
 # ---------------- START ----------------
 
 if __name__ == "__main__":
-    run_assistant()
+    parser = argparse.ArgumentParser(description="JUGNU CLI Assistant")
+    parser.add_argument("--file", "-f", action="append", help="Path to local file to attach")
+    args, _ = parser.parse_known_args()
+    run_assistant(initial_files=args.file)

@@ -402,7 +402,8 @@ def _format_html_text(text: str) -> str:
     escaped = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", escaped)
 
     # Convert double newlines to paragraphs
-    paragraphs = [f"<p>{p.replace('\n', '<br>')}</p>" for p in escaped.split("\n\n") if p.strip()]
+    newline = "\n"
+    paragraphs = [f"<p>{p.replace(newline, '<br>')}</p>" for p in escaped.split("\n\n") if p.strip()]
     return "".join(paragraphs) if paragraphs else f"<p>{escaped}</p>"
 
 

@@ -68,6 +68,13 @@ STRINGS = {
         "export_success_title": "Export Successful",
         "export_success_msg": "Chat successfully exported to {path}",
         "export_error_msg": "Could not export chat: {error}",
+        # Document Attachment and Ingestion
+        "attach_file_btn": "📎 Attach",
+        "attach_dialog_title": "Select Document or Code File",
+        "attach_error_title": "Attachment Error",
+        "attach_err_binary": "Cannot attach binary file: {filename}",
+        "attach_err_large": "File too large: {filename} ({size}). Limit is 512 KB.",
+        "attach_err_read": "Could not read file: {error}",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -137,6 +144,13 @@ STRINGS = {
         "export_success_title": "Export Ho Gaya",
         "export_success_msg": "Chat safaltapoorvak {path} par export ho gayi",
         "export_error_msg": "Chat export nahi ho saki: {error}",
+        # Document Attachment and Ingestion
+        "attach_file_btn": "📎 Jodein",
+        "attach_dialog_title": "Document ya Code File Chunein",
+        "attach_error_title": "Attachment Error",
+        "attach_err_binary": "Binary file attach nahi kar sakte: {filename}",
+        "attach_err_large": "File bahut badi hai: {filename} ({size}). Limit 512 KB hai.",
+        "attach_err_read": "File read nahi ho saki: {error}",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",
