@@ -4,6 +4,9 @@ Only the terminal screen lives here: the greeting, the commands, and the wording
 of the messages. Everything shared with the desktop app (the model, the clock, the
 calculator and the request to Ollama) comes from core.py.
 """
+import json
+from pathlib import Path
+
 from core import (
     ERROR_CONNECTION,
     ERROR_INVALID,
@@ -13,32 +16,9 @@ from core import (
     chat,
     is_time_question,
     local_now,
-import ast
-import datetime
-import json
-import operator
-import re
-import sys
-
-import requests
-
-# Optional conversational openers/closers so polite phrasing still triggers
-# local time/date replies without allowing unrelated sentences to match.
-_GREETING_PREFIX = (
-    r"(?:(?:hey|hi|hello|jugnu|ok|okay|please|pls|plz|sorry|wait|"
-    r"excuse\s+me|bhai|yaar|ji)[,:\s]+)*"
 )
-_ASK_PREFIX = (
-    r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
-    r"(?:(?:tell|show|give)\s+me[,:\s]+|do\s+you\s+(?:know|have)[,:\s]+)?"
-)
-_POLITE_SUFFIX = (
-    r"(?:[,\s]+(?:please|pls|plz|right\s+now|now|today|abhi|bhai|yaar|ji|jugnu))*"
-)
-_TIME_OR_DATE_NOUN = (
-    r"(?:date\s+(?:and|&)\s+time|time\s+(?:and|&)\s+date|"
-    r"day\s+(?:and|&)\s+date|date\s+(?:and|&)\s+day|time|date)"
-)
+from export_manager import export_chat
+from search_engine import SearchEngine
 
 # calculate() and is_time_question() now live in core.py; they stay importable from here.
 __all__ = ["calculate", "is_time_question", "ask_ai", "run_assistant"]
@@ -102,106 +82,43 @@ def ask_ai(user_message):
 
     if result.error == ERROR_CONNECTION:
         return (
-def ask_ai(user_message, stream=True):
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": user_message
-                    }
-                ],
-                "stream": stream
-            },
-            stream=stream,
-            timeout=120
-        )
-
-        response.raise_for_status()
-
-        if stream:
-            collected = []
-            lines = (
-                response.iter_lines()
-                if getattr(response, "raw", None) is not None
-                else (response._content.splitlines() if getattr(response, "_content", None) else [])
-            )
-            for line in lines:
-                if not line:
-                    continue
-                try:
-                    raw_str = (
-                        line.decode("utf-8").strip()
-                        if isinstance(line, (bytes, bytearray))
-                        else str(line).strip()
-                    )
-                    if not raw_str:
-                        continue
-                    data = json.loads(raw_str)
-                    content = data.get("message", {}).get("content", "")
-                    if content:
-                        sys.stdout.write(content)
-                        sys.stdout.flush()
-                        collected.append(content)
-                    if data.get("done", False):
-                        break
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-            if collected:
-                print()
-            return "".join(collected).strip()
-
-        data = response.json()
-        answer = data["message"]["content"]
-        return answer.strip()
-
-    except requests.exceptions.ConnectionError:
-        msg = (
             "I cannot connect to Ollama. "
             "Please make sure Ollama is running."
         )
-        if stream:
-            print(msg)
-        return msg
 
     if result.error == ERROR_TIMEOUT:
         return (
-    except requests.exceptions.Timeout:
-        msg = (
             "The AI is taking too long to respond. "
             "Please try again."
         )
-        if stream:
-            print(msg)
-        return msg
 
     if result.error == ERROR_INVALID:
         return "An error occurred: Ollama returned an invalid response."
 
     return f"An error occurred: {result.detail}"
-    except Exception as error:
-        msg = f"An error occurred: {error}"
-        if stream:
-            print(msg)
-        return msg
+
+
+def _load_history():
+    try:
+        with open("jugnu_history.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 
 # ---------------- HELP ----------------
 
 def show_help():
     print("\nAvailable commands:")
-    print("1. time       - Show current time")
-    print("2. date       - Show today's date")
-    print("3. calculate  - Calculate a mathematical expression")
-    print("4. help       - Show available commands")
-    print("5. bye        - Exit the assistant")
+    print("1. time                  - Show current time")
+    print("2. date                  - Show today's date")
+    print("3. calculate <expr>      - Calculate a mathematical expression")
+    print("4. /search <query>       - Search across conversation history")
+    print("5. /export [id] <format> - Export chat to md, html, json, or txt")
+    print("6. /chats                - List all saved conversation history")
+    print("7. help                  - Show available commands")
+    print("8. bye                   - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -240,10 +157,69 @@ def run_assistant():
             expression = user_input[10:].strip()
             print("\nAssistant:", calculate(expression))
 
+        # Search conversations
+        elif command.startswith("/search"):
+            query = user_input[7:].strip()
+            if not query:
+                print("\nAssistant: Please provide a search query, e.g. /search quicksort")
+            else:
+                history = _load_history()
+                engine = SearchEngine(history)
+                results = engine.search(query, limit=10)
+                if not results:
+                    print(f"\nAssistant: No matches found for '{query}'.")
+                else:
+                    print(f"\nAssistant: Found {len(results)} match(es) for '{query}':")
+                    for idx, res in enumerate(results, 1):
+                        role_tag = "User" if res.role == "user" else "JUGNU"
+                        time_str = f" ({res.timestamp})" if res.timestamp else ""
+                        print(f"{idx}. [{res.chat_title}]{time_str} {role_tag}: {res.snippet}")
+
+        # Export chat
+        elif command.startswith("/export"):
+            parts = user_input.split()
+            history = _load_history()
+            if not history:
+                print("\nAssistant: No conversation history found to export.")
+            else:
+                fmt = "md"
+                target_chat = history[-1]
+                if len(parts) == 2:
+                    fmt = parts[1].lower().lstrip(".")
+                elif len(parts) >= 3:
+                    cid = parts[1]
+                    fmt = parts[2].lower().lstrip(".")
+                    matched = next((c for c in history if c.get("id") == cid), None)
+                    if matched:
+                        target_chat = matched
+                    else:
+                        print(f"\nAssistant: Chat ID '{cid}' not found. Using most recent chat.")
+
+                raw_title = target_chat.get("title", "chat")
+                safe_title = "".join(c if c.isalnum() else "_" for c in raw_title).strip("_") or "chat"
+                filename = f"jugnu_export_{safe_title}.{fmt}"
+                try:
+                    export_chat(target_chat, fmt, output_path=filename)
+                    print(f"\nAssistant: Successfully exported '{target_chat.get('title')}' to '{filename}'.")
+                except Exception as err:
+                    print(f"\nAssistant: Export error: {err}")
+
+        # List saved chats
+        elif command in ["/chats", "/history"]:
+            history = _load_history()
+            if not history:
+                print("\nAssistant: No saved chats.")
+            else:
+                print(f"\nSaved Chats ({len(history)}):")
+                for idx, c in enumerate(history, 1):
+                    msg_count = len(c.get("messages", []))
+                    print(f"{idx}. [{c.get('id')[:8]}] {c.get('title', 'New Chat')} ({msg_count} messages)")
+
         # General AI question
         else:
             print("\nAssistant: ", end="", flush=True)
-            ask_ai(user_input, stream=True)
+            answer = ask_ai(user_input)
+            print(answer)
 
 
 # ---------------- START ----------------

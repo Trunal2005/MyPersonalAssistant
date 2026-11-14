@@ -142,8 +142,13 @@ def test_right_click_menu_acts_on_the_clicked_chat(with_chats, monkeypatch):
     monkeypatch.setattr(app, "rename_chat", renamed.append)
     row = app.history_list.visualItemRect(app.history_list.item(1)).center()  # "Beta"
     menu = app.show_chat_menu(row)
-    rename, delete = menu.actions()
-    assert (rename.text(), delete.text()) == (app.t("chat_menu_rename"), app.t("chat_menu_delete"))
+    actions = [a for a in menu.actions() if not a.isSeparator()]
+    export, rename, delete = actions
+    assert (export.text(), rename.text(), delete.text()) == (
+        app.t("chat_menu_export"),
+        app.t("chat_menu_rename"),
+        app.t("chat_menu_delete"),
+    )
     rename.trigger()
     assert renamed == ["b"]
     menu.close()

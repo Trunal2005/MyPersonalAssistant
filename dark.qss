@@ -177,6 +177,12 @@ QPlainTextEdit, QLineEdit {
 QPlainTextEdit:focus, QLineEdit:focus {
     border: 1px solid #8B6CF0;
 }
+QLineEdit#searchEntry {
+    padding: 6px 10px;
+    font-size: 12px;
+    border-radius: 8px;
+    margin-bottom: 2px;
+}
 QLabel[variant="field"] {
     font-weight: 600;
 }
