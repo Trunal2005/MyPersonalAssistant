@@ -36,6 +36,7 @@ STRINGS = {
         "header_title": "✦  Your little genius is here!",
         # Chat area
         "send_btn": "➤  Send",
+        "stop_btn": "⏹  Stop",
         "you_label": "You",
         "welcome_title": "Hey! I'm JUGNU",
         "welcome_prompt": "What would you like to explore today?",
@@ -43,6 +44,7 @@ STRINGS = {
         "status_ready": "Ready",
         "status_offline": "Ollama offline",
         "status_thinking": "Thinking…",
+        "status_streaming": "Generating…",
         "status_save_error": "Could not save history: {error}",
         # Dialogs
         "clear_dialog_title": "Clear Current Chat",
@@ -94,6 +96,7 @@ STRINGS = {
         "header_title": "✦  Aapka chhota genius aa gaya!",
         # Chat area
         "send_btn": "➤  Bhejo",
+        "stop_btn": "⏹  Roko",
         "you_label": "Aap",
         "welcome_title": "Hey! Main JUGNU hoon",
         "welcome_prompt": "Aaj aap kya explore karna chahenge?",
@@ -101,6 +104,7 @@ STRINGS = {
         "status_ready": "Taiyaar",
         "status_offline": "Ollama offline hai",
         "status_thinking": "Soch raha hoon…",
+        "status_streaming": "Likh raha hoon…",
         "status_save_error": "History save nahi ho payi: {error}",
         # Dialogs
         "clear_dialog_title": "Current Chat Clear Karo",
