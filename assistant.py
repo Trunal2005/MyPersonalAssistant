@@ -1,3 +1,18 @@
+"""Command-line version of JUGNU.
+
+Only the terminal screen lives here: the greeting, the commands, and the wording
+of the messages. Everything shared with the desktop app (the model, the clock, the
+calculator and the request to Ollama) comes from core.py.
+"""
+from core import (
+    ERROR_CONNECTION,
+    ERROR_INVALID,
+    ERROR_TIMEOUT,
+    build_messages,
+    calculate,
+    chat,
+    is_time_question,
+    local_now,
 import ast
 import datetime
 import json
@@ -25,74 +40,10 @@ _TIME_OR_DATE_NOUN = (
     r"day\s+(?:and|&)\s+date|date\s+(?:and|&)\s+day|time|date)"
 )
 
-_TIME_QUESTION_PATTERNS = [
-    # Standalone short queries: "time", "date", "time please", "date?"
-    re.compile(
-        rf"^{_GREETING_PREFIX}\b(?:time|date)\b{_POLITE_SUFFIX}$",
-        re.IGNORECASE,
-    ),
-    # English current time, date, and day questions
-    re.compile(
-        rf"^{_GREETING_PREFIX}{_ASK_PREFIX}"
-        rf"(?:"
-        rf"\bwhat(?:'s|\s+is)\s+(?:the\s+)?(?:current\s+|local\s+|today(?:'s|s)?\s+)?{_TIME_OR_DATE_NOUN}\b|"
-        rf"\bwhat(?:'s|\s+is)\s+(?:the\s+)?day\s+today\b|"
-        rf"\bwhat\s+(?:the\s+)?(?:current\s+|local\s+|today(?:'s|s)?\s+)?{_TIME_OR_DATE_NOUN}\s+is\b|"
-        rf"\bwhat\s+(?:time|date)\s+(?:is\s+it|it\s+is)\b|"
-        rf"\bwhat\s+date\s+is\s+today\b|"
-        rf"\b(?:what|which)\s+day(?:\s+of\s+(?:the\s+)?week)?\s+"
-        rf"(?:is\s+(?:it|today)|(?:it|today)\s+is)\b|"
-        rf"\b(?:the\s+(?:current\s+|local\s+)?|current\s+|local\s+|today(?:'s|s)?\s+){_TIME_OR_DATE_NOUN}\b|"
-        rf"\b(?:the\s+)?(?:date\s+today|date\s+(?:and|&)\s+time|time\s+(?:and|&)\s+date)\b"
-        rf")"
-        rf"{_POLITE_SUFFIX}$",
-        re.IGNORECASE,
-    ),
-    # Hindi / Hinglish current time, date, and day questions
-    re.compile(
-        rf"^{_GREETING_PREFIX}"
-        rf"(?:"
-        rf"\babhi\s+(?:time|samay)\b|"
-        rf"\b(?:abhi\s+)?(?:time|samay)\s+"
-        rf"(?:kya(?:\s+(?:hai|hua(?:\s+hai)?|chal\s+raha(?:\s+hai)?))?|"
-        rf"kitna\s+(?:hua(?:\s+hai)?|baja(?:\s+hai)?)|hai\s+kya|bata(?:o|\s+do|na)?|bol(?:o)?)\b|"
-        rf"\b(?:abhi\s+)?kya\s+(?:time|samay)(?:\s+(?:hai|hua(?:\s+hai)?|ho\s+raha(?:\s+hai)?))?\b|"
-        rf"\b(?:abhi\s+)?kitna\s+(?:time|samay)\s+(?:hai|hua(?:\s+hai)?|ho\s+raha(?:\s+hai)?)\b|"
-        rf"\b(?:abhi\s+)?(?:kitne\s+baje(?:\s+(?:hain?|hai|hue(?:\s+hain?)?))?|kitna\s+baja(?:\s+hai)?)\b|"
-        rf"\baaj\s+(?:ki|ka)\s+(?:date|tareekh|tarikh)\b|"
-        rf"\b(?:aaj\s+(?:ki|ka)\s+|aaj\s+)?(?:date|tareekh|tarikh)\s+"
-        rf"(?:kya(?:\s+(?:hai|chal\s+rahi(?:\s+hai)?))?|hai\s+kya|bata(?:o|\s+do|na)?|bol(?:o)?)\b|"
-        rf"\b(?:aaj\s+(?:ki|ka)\s+|aaj\s+)?(?:kya|kaun\s*sa|konsa|kaun\s*si|konsi|kitni|kitna)\s+"
-        rf"(?:date|tareekh|tarikh)(?:\s+hai)?\b|"
-        rf"\baaj\s+(?:(?:ka\s+)?(?:din|day)\s+(?:kya\s+hai|kaun\s*sa\s+hai|konsa\s+hai|hai\s+kya)|"
-        rf"(?:kya|kaun\s*sa|konsa)\s+(?:din|day)(?:\s+hai)?)\b|"
-        rf"\b(?:kaun\s*sa|konsa)\s+(?:din|day)\s+hai\b|"
-        rf"\b(?:aaj\s+(?:ki|ka)\s+|abhi\s+)?(?:(?:date|tareekh|tarikh)\s+(?:aur|and|&)\s+(?:time|samay)|"
-        rf"(?:time|samay)\s+(?:aur|and|&)\s+(?:date|tareekh|tarikh))"
-        rf"(?:\s+(?:kya\s+(?:hai|hain)|bata(?:o|\s+do|na)?))?\b"
-        rf")"
-        rf"{_POLITE_SUFFIX}$",
-        re.IGNORECASE,
-    ),
-]
-
-
-def is_time_question(text):
-    """Return True if *text* asks for the current local time, date, or day."""
-    if not isinstance(text, str):
-        return False
-
-    q = re.sub(r"\s+", " ", text.strip().lower()).replace("\u2019", "'")
-    q = q.rstrip("?!.। ")
-    if not q:
-        return False
-
-    return any(pattern.fullmatch(q) for pattern in _TIME_QUESTION_PATTERNS)
+# calculate() and is_time_question() now live in core.py; they stay importable from here.
+__all__ = ["calculate", "is_time_question", "ask_ai", "run_assistant"]
 
 # ---------------- CONFIGURATION ----------------
-
-MODEL = "llama3.2:3b"
-OLLAMA_URL = "http://localhost:11434/api/chat"
 
 SYSTEM_PROMPT = """
 You are a helpful personal AI assistant.
@@ -108,7 +59,7 @@ Rules:
 # ---------------- GREETING ----------------
 
 def greet():
-    hour = datetime.datetime.now().hour
+    hour = local_now().hour
 
     if hour < 12:
         greeting = "Good morning!"
@@ -130,79 +81,27 @@ def greet():
 # ---------------- TIME ----------------
 
 def get_time():
-    current_time = datetime.datetime.now().strftime("%I:%M:%S %p")
+    current_time = local_now().strftime("%I:%M:%S %p")
     return f"The current time is {current_time}."
 
 
 # ---------------- DATE ----------------
 
 def get_date():
-    current_date = datetime.datetime.now().strftime("%d %B %Y")
+    current_date = local_now().strftime("%d %B %Y")
     return f"Today's date is {current_date}."
-
-
-# ---------------- CALCULATOR ----------------
-
-def calculate(expression):
-    """
-    Safely evaluates basic arithmetic expressions.
-    Supports +, -, *, /, //, %, and **.
-    """
-
-    allowed_operators = {
-        ast.Add: operator.add,
-        ast.Sub: operator.sub,
-        ast.Mult: operator.mul,
-        ast.Div: operator.truediv,
-        ast.FloorDiv: operator.floordiv,
-        ast.Mod: operator.mod,
-        ast.Pow: operator.pow,
-        ast.USub: operator.neg,
-        ast.UAdd: operator.pos
-    }
-
-    def evaluate(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            return node.value
-
-        if isinstance(node, ast.BinOp):
-            left = evaluate(node.left)
-            right = evaluate(node.right)
-
-            op_type = type(node.op)
-
-            if op_type not in allowed_operators:
-                raise ValueError("Unsupported operator")
-
-            if op_type == ast.Pow and abs(right) > 100:
-                raise ValueError("Exponent is too large")
-
-            return allowed_operators[op_type](left, right)
-
-        if isinstance(node, ast.UnaryOp):
-            op_type = type(node.op)
-
-            if op_type not in allowed_operators:
-                raise ValueError("Unsupported operator")
-
-            return allowed_operators[op_type](evaluate(node.operand))
-
-        raise ValueError("Invalid mathematical expression")
-
-    try:
-        parsed_expression = ast.parse(expression, mode="eval")
-        result = evaluate(parsed_expression.body)
-        return f"The answer is {result}."
-
-    except ZeroDivisionError:
-        return "Error: Division by zero is not allowed."
-
-    except Exception:
-        return "Sorry, I could not calculate that expression."
 
 
 # ---------------- AI CHAT ----------------
 
+def ask_ai(user_message):
+    result = chat(build_messages(SYSTEM_PROMPT, [{"role": "user", "content": user_message}]))
+
+    if result.ok:
+        return result.answer
+
+    if result.error == ERROR_CONNECTION:
+        return (
 def ask_ai(user_message, stream=True):
     try:
         response = requests.post(
@@ -272,6 +171,8 @@ def ask_ai(user_message, stream=True):
             print(msg)
         return msg
 
+    if result.error == ERROR_TIMEOUT:
+        return (
     except requests.exceptions.Timeout:
         msg = (
             "The AI is taking too long to respond. "
@@ -281,6 +182,10 @@ def ask_ai(user_message, stream=True):
             print(msg)
         return msg
 
+    if result.error == ERROR_INVALID:
+        return "An error occurred: Ollama returned an invalid response."
+
+    return f"An error occurred: {result.detail}"
     except Exception as error:
         msg = f"An error occurred: {error}"
         if stream:
@@ -345,5 +250,3 @@ def run_assistant():
 
 if __name__ == "__main__":
     run_assistant()
-
-

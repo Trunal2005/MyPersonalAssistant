@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 
+import core
 import desktop_app as desktop
 
 
@@ -44,7 +45,7 @@ def app(tmp_path, monkeypatch):
     response(b'{"message":{"content":"  "}}'),
 ])
 def test_failure_notice_survives_reload_without_consuming_context(app, failure):
-    with patch.object(desktop.requests, "post", side_effect=[failure] * 5):
+    with patch.object(core.requests, "post", side_effect=[failure] * 5):
         for _ in range(5):
             app.chats[0]["messages"].append({"role": "user", "content": "Try again"})
             app.busy = True
@@ -57,7 +58,7 @@ def test_failure_notice_survives_reload_without_consuming_context(app, failure):
     assert len(notices) == 5
     assert app.add_bubble.call_count == 5
     app.chats[0]["messages"].append({"role": "user", "content": "Which project?"})
-    with patch.object(desktop.requests, "post", return_value=response(
+    with patch.object(core.requests, "post", return_value=response(
         b'{"message":{"content":"Project Cedar"}}'
     )) as post:
         app.ask_ollama("chat")
@@ -76,7 +77,7 @@ def test_legacy_messages_are_retained_without_matching_error_wording(app):
     ]
     app.save_history()
     app.chats = app.load_history()
-    with patch.object(desktop.requests, "post", return_value=response(
+    with patch.object(core.requests, "post", return_value=response(
         b'{"message":{"content":"Explanation"}}'
     )) as post:
         app.ask_ollama("chat")
@@ -90,7 +91,7 @@ def test_context_limit_applies_after_filtering(app):
     app.chats[0]["messages"] = valid + [
         {"role": "assistant", "content": "notice", "is_error": True}
     ] * 10
-    with patch.object(desktop.requests, "post", return_value=response(
+    with patch.object(core.requests, "post", return_value=response(
         b'{"message":{"content":"OK"}}'
     )) as post:
         app.ask_ollama("chat")

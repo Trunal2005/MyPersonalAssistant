@@ -2,10 +2,8 @@ import tkinter as tk
 from tkinter import messagebox
 from tkinter import font as tkfont
 import math
-from datetime import datetime
 import json
 import threading
-import requests
 import uuid
 import os
 import sys
@@ -13,15 +11,16 @@ import tempfile
 import ast
 import re
 
+from core import (
+    ERROR_CONNECTION, ERROR_INVALID, ERROR_TIMEOUT, build_messages, calculate,
+    chat as ollama_chat, is_time_question as detect_time_question, local_datetime_text, local_now,
+)
 from strings import build_system_prompt, get_string, next_language, normalize_language
 from tts import TTSManager, DEFAULT_RATE, DEFAULT_VOLUME, RATE_MIN, RATE_MAX, clamp
-from assistant import calculate, is_time_question as detect_time_question
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import render_markdown, plain_text
 
 APP_TITLE = "JUGNU | Just an Unusually Genius Neural Utility"
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "llama3.2:3b"
 HISTORY_FILE = "jugnu_history.json"
 SETTINGS_FILE = "jugnu_settings.json"
 MAX_LIST_TITLE = 34    # longer chat titles are shortened with "…" in the sidebar list
@@ -89,13 +88,74 @@ DARK = {
     "code": "#17142A", "inline_code": "#3A3157"
 }
 
-def local_datetime_text():
-    # Uses the Windows system's configured local timezone.
-    now = datetime.now().astimezone()
-    return now.strftime("%A, %d %B %Y, %I:%M:%S %p %Z")
-
 def message_time_text():
-    return datetime.now().astimezone().strftime("%I:%M %p")
+    return local_now().strftime("%I:%M %p")
+
+
+class FlatButton(tk.Label):
+    """A tk.Label that behaves like a tk.Button.
+
+    On macOS, Tk draws tk.Button with the native Aqua style and ignores bg and
+    activebackground, so themed buttons (white text) become unreadable. A Label
+    respects every colour option, so it is used as the button there instead.
+    It accepts the same options as tk.Button, including command and state.
+    """
+
+    def __init__(self, master=None, command=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self._command = command
+        self._pressed = False
+        # Class-level bindings live in their own bindtag, so a widget's own
+        # bind("<Enter>", ...) (like the Copy button's hover) does not replace them.
+        self.bindtags((self.bindtags()[0], "FlatButton") + self.bindtags()[1:])
+        if not self.bind_class("FlatButton"):
+            self.bind_class("FlatButton", "<Enter>", FlatButton._on_enter)
+            self.bind_class("FlatButton", "<Leave>", FlatButton._on_leave)
+            self.bind_class("FlatButton", "<ButtonPress-1>", FlatButton._on_press)
+            self.bind_class("FlatButton", "<ButtonRelease-1>", FlatButton._on_release)
+
+    def configure(self, cnf=None, **kwargs):
+        if "command" in kwargs:
+            self._command = kwargs.pop("command")
+        if cnf is None and not kwargs:
+            return super().configure()
+        return super().configure(cnf, **kwargs)
+
+    config = configure
+
+    def invoke(self):
+        if str(self["state"]) != "disabled" and self._command:
+            return self._command()
+
+    @staticmethod
+    def _on_enter(event):
+        widget = event.widget
+        if str(widget["state"]) != "disabled":
+            widget.configure(state="active")  # shows activebackground / activeforeground
+
+    @staticmethod
+    def _on_leave(event):
+        widget = event.widget
+        widget._pressed = False
+        if str(widget["state"]) != "disabled":
+            widget.configure(state="normal")
+
+    @staticmethod
+    def _on_press(event):
+        event.widget._pressed = str(event.widget["state"]) != "disabled"
+
+    @staticmethod
+    def _on_release(event):
+        widget = event.widget
+        inside = 0 <= event.x < widget.winfo_width() and 0 <= event.y < widget.winfo_height()
+        if widget._pressed and inside:
+            widget._pressed = False
+            widget.invoke()
+        widget._pressed = False
+
+
+# tk.Button keeps the native look elsewhere; on macOS it ignores the theme colours.
+Button = FlatButton if sys.platform == "darwin" else tk.Button
 
 
 class FlatButton(tk.Label):
@@ -469,6 +529,7 @@ class JugnuApp:
         self.input_box.bind("<Return>", self.send_message)
         self.input_box.bind("<Shift-Return>", lambda event: None)
         self.send_btn = Button(self.bottom, command=self.send_message,
+                                  relief="flat", font=("Segoe UI", 10, "bold"), padx=18, pady=12)
                                relief="flat", font=("Segoe UI", 10, "bold"), padx=18, pady=12)
         self.send_btn.pack(side="right")
         self.stop_gen_btn = Button(self.bottom, command=self.stop_generating,
@@ -1370,15 +1431,13 @@ class JugnuApp:
 
     def warm_up(self):
         def task():
-            try:
-                requests.post(OLLAMA_URL, json={
-                    "model": MODEL, "messages": [{"role": "user", "content": "Reply with OK."}],
-                    "stream": False, "keep_alive": "10m",
-                    "options": {"num_predict": 3}
-                }, timeout=90)
-                self.root.after(0, lambda: self.set_status("status_ready"))
-            except requests.RequestException:
+            result = ollama_chat([{"role": "user", "content": "Reply with OK."}],
+                                 timeout=90, keep_alive="10m", options={"num_predict": 3})
+            # Only "cannot reach Ollama" counts as offline; any reply at all means it is running.
+            if result.error in (ERROR_CONNECTION, ERROR_TIMEOUT):
                 self.root.after(0, lambda: self.set_status("status_offline"))
+            else:
+                self.root.after(0, lambda: self.set_status("status_ready"))
         threading.Thread(target=task, daemon=True).start()
 
     def is_time_question(self, text):
@@ -1724,6 +1783,31 @@ class JugnuApp:
 
     def ask_ollama(self, chat_id):
         language = self.language  # The prompt and any error text use the language chosen at send time.
+        saved_chat = next((c for c in self.chats if c.get("id") == chat_id), None)
+        if not saved_chat:
+            # The conversation may have been cleared while the request was running.
+            self.root.after(0, lambda: self.finish_answer(None, chat_id))
+            return
+        messages = build_messages(build_system_prompt(language, local_datetime_text()),
+                                  saved_chat.get("messages", []))
+        # The request itself is shared with the command-line version (core.py); the wording
+        # of each failure below is this window's own, so it can be translated.
+        result = ollama_chat(messages, timeout=180, keep_alive="10m",
+                             options={"num_predict": 256, "temperature": 0.6})
+        is_error = True
+        if result.ok and result.answer:
+            answer, is_error = result.answer, False
+        elif result.ok:
+            answer = get_string(language, "error_empty_reply")
+        elif result.error == ERROR_INVALID:
+            answer = get_string(language, "error_invalid_response")
+        elif result.error == ERROR_TIMEOUT:
+            answer = get_string(language, "error_timeout")
+        elif result.error == ERROR_CONNECTION:
+            answer = get_string(language, "error_connection")
+        else:
+            answer = get_string(language, "error_generic", error=result.detail)
+        self.root.after(0, lambda: self.finish_answer(answer, chat_id, is_error=is_error))
         accumulated = []
         is_error = False
         error_message = None

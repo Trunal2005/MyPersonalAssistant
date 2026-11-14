@@ -44,6 +44,23 @@ Contributors can earn points on the leaderboard based on merged PRs tagged with:
 - **LLM Engine**: Ollama (Llama 3.2 3B)
 - **Networking**: Requests, JSON
 
+## 🗂️ Project Structure
+
+JUGNU has two front ends, a desktop window and a terminal version, that share one core:
+
+| File | What it does |
+| --- | --- |
+| `desktop_app.py` | The desktop window (Tkinter): screens, chat history, themes, voice, buttons |
+| `assistant.py` | The terminal version: greeting, commands and its own wording |
+| `core.py` | **Shared by both.** Model name and Ollama address, clock helpers, safe calculator, "what time is it?" detector, `build_messages()` and `chat()` (the one place that talks to Ollama) |
+| `strings.py` | All text shown in the window, in English and Hinglish |
+| `markdown_render.py` | Turns Markdown in replies into styled text for the chat bubbles |
+| `tts.py` | Offline voice output |
+| `history_lock.py` | Stops two windows from using the same chat history |
+| `tests/` | Automated tests (`test_core.py` covers the shared core) |
+
+If something must behave the same in the window and in the terminal, it belongs in `core.py`. Wording and layout stay in the file that shows them.
+
 ## ⚙️ Setup Instructions
 
 ### 1. Install Python
@@ -67,6 +84,8 @@ pip install requests
 `ash
 python desktop_app.py
 `
+
+Prefer the terminal? Run `python assistant.py` instead. It uses the same core.
 
 ---
 
@@ -104,7 +123,7 @@ python -m pytest tests/test_calculator.py -v
 python -m pytest tests/test_time_question.py -v
 ```
 
-The test suite covers calculator operations, error handling, unsupported expressions, and time/date question detection.
+The test suite covers calculator operations, error handling, unsupported expressions, time/date question detection, and the shared core (`core.py`: building messages, talking to Ollama, and reporting errors).
 
 **Note:** Running the tests does not require launching the Tkinter desktop application or starting the Ollama server.
 

@@ -83,7 +83,7 @@ def test_invalid_response_recovers_and_accepts_follow_up(desktop, monkeypatch, b
     worker_errors = []
     monkeypatch.setattr(threading, "excepthook", lambda args: worker_errors.append(args.exc_value))
     valid = make_response(b'{"message":{"role":"assistant","content":"Recovered reply"}}')
-    with patch("desktop_app.requests.post", side_effect=[make_response(body), valid]) as post:
+    with patch("core.requests.post", side_effect=[make_response(body), valid]) as post:
         send(app, "First prompt")
         wait_for(root, lambda: worker_errors or not app.busy)
         assert not worker_errors
@@ -109,7 +109,7 @@ def test_new_chat_can_send_after_invalid_response(desktop):
     app, root, callback_errors = desktop
     invalid = make_response(b'{"message":null}')
     valid = make_response(b'{"message":{"content":"New chat reply"}}')
-    with patch("desktop_app.requests.post", side_effect=[invalid, valid]) as post:
+    with patch("core.requests.post", side_effect=[invalid, valid]) as post:
         send(app, "Original prompt")
         wait_for(root, lambda: not app.busy)
         original_chat = app.current_chat()
@@ -133,7 +133,7 @@ def test_new_chat_can_send_after_invalid_response(desktop):
 ])
 def test_existing_failures_complete(desktop, failure):
     app, root, callback_errors = desktop
-    with patch("desktop_app.requests.post", side_effect=[failure]):
+    with patch("core.requests.post", side_effect=[failure]):
         send(app, "Prompt")
         wait_for(root, lambda: not app.busy)
     assert not callback_errors
@@ -151,7 +151,7 @@ def test_delayed_response_stays_with_original_chat(desktop):
         assert release.wait(3)
         return make_response(b'{"message":{"content":"Delayed reply"}}')
 
-    with patch("desktop_app.requests.post", side_effect=delayed) as post:
+    with patch("core.requests.post", side_effect=delayed) as post:
         send(app, "Original prompt")
         wait_for(root, request_started.is_set)
         assert app.busy

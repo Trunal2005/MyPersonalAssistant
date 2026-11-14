@@ -101,6 +101,18 @@ git checkout -b fix/your-bugfix-name
 
 ---
 
+## 🗂️ Where Code Lives
+
+JUGNU has two front ends, `desktop_app.py` (the window) and `assistant.py` (the terminal), and both use `core.py`.
+
+- **Shared logic goes in `core.py`**: the model name and Ollama address, the clock helpers, the calculator, `build_messages()` and `chat()`. Write it once there. Never copy it into a front end.
+- **Never call Ollama or hard-code the model or URL anywhere else.** Always go through `core.chat()`. It returns a `ChatResult` holding either an answer or an error kind (`ERROR_CONNECTION`, `ERROR_TIMEOUT`, `ERROR_INVALID`, `ERROR_OTHER`).
+- **Wording stays in the front end.** `core.py` reports error *kinds*, not text, so the window can translate them from `strings.py` and the terminal can keep its own messages.
+- **Screens, buttons, colours and chat history** stay in `desktop_app.py`. **The greeting and terminal commands** stay in `assistant.py`.
+- `tests/test_core.py` checks that the model, the URL and the request code exist only in `core.py`. If you add a feature that both front ends need, add it to `core.py` and test it there.
+
+---
+
 ## 💬 Need Help?
 - Ask questions in issue discussions or PR comments.
 - For WOCS program queries, reach out in the Code Social Discord #wocs-help channel.
