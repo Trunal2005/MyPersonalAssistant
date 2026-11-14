@@ -242,6 +242,11 @@ def load_language(path=SETTINGS_FILE):
     return normalize_language(_read_settings(path).get("language"))
 
 
+def load_model_setting(path=SETTINGS_FILE):
+    model = _read_settings(path).get("default_model")
+    return model if isinstance(model, str) and model.strip() else MODEL
+
+
 def save_settings(path=SETTINGS_FILE, **settings):
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -332,11 +337,12 @@ def model_messages(chat, language):
     return messages
 
 
-def ask_ollama(chat, language):
+def ask_ollama(chat, language, model=None):
     """Ask the model for the next reply in `chat`. Blocks; returns (answer, is_error) and never raises."""
     try:
+        chosen_model = model or chat.get("model") or MODEL
         response = requests.post(OLLAMA_URL, json={
-            "model": MODEL,
+            "model": chosen_model,
             "messages": model_messages(chat, language),
             "stream": False,
             "keep_alive": "10m",

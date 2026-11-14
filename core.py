@@ -238,13 +238,13 @@ def build_messages(system_prompt, history, limit=HISTORY_LIMIT):
     return messages
 
 
-def chat(messages, *, timeout=120, keep_alive=None, options=None):
+def chat(messages, *, model=None, timeout=120, keep_alive=None, options=None):
     """Send `messages` to Ollama and wait for the whole reply.
 
     Never raises for a failed request: the problem is returned in the ChatResult.
     An empty reply is not an error here; each front end decides what to say about it.
     """
-    payload = {"model": MODEL, "messages": messages, "stream": False}
+    payload = {"model": model or MODEL, "messages": messages, "stream": False}
     if keep_alive is not None:
         payload["keep_alive"] = keep_alive
     if options is not None:

@@ -20,6 +20,15 @@ import jugnu_core as core
 from export_manager import export_chat
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import plain_text, render_html
+from models import (
+    DEFAULT_MODEL,
+    RECOMMENDED_MODELS,
+    ModelInfo,
+    fetch_local_models,
+    format_bytes,
+    pull_model_stream,
+    resolve_active_model,
+)
 from search_engine import SearchEngine
 from strings import get_string, next_language
 from tts import RATE_MAX, RATE_MIN, TTSManager
@@ -295,6 +304,98 @@ class VoiceSettingsDialog(QDialog):
         super().closeEvent(event)
 
 
+class ModelPullDialog(QDialog):
+    """Download new Ollama models with progress and status updates."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.setModal(True)
+        self.setMinimumWidth(440)
+        self.setWindowTitle(self.app.t("model_pull_title"))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 20)
+        layout.setSpacing(10)
+
+        prompt = QLabel(self.app.t("model_pull_prompt"))
+        prompt.setWordWrap(True)
+        layout.addWidget(prompt)
+
+        rec_label = QLabel(self.app.t("model_pull_recommended"))
+        rec_label.setProperty("variant", "field")
+        layout.addWidget(rec_label)
+
+        self.rec_combo = QComboBox()
+        self.rec_combo.addItem("-- Select recommended model --", "")
+        for m in RECOMMENDED_MODELS:
+            self.rec_combo.addItem(f"{m['name']} ({m['desc']})", m["name"])
+        self.rec_combo.currentIndexChanged.connect(self.on_rec_selected)
+        layout.addWidget(self.rec_combo)
+
+        custom_label = QLabel(self.app.t("model_pull_custom_label"))
+        custom_label.setProperty("variant", "field")
+        layout.addWidget(custom_label)
+
+        self.model_input = QLineEdit()
+        self.model_input.setPlaceholderText("e.g. llama3.2:1b, qwen2.5:3b")
+        layout.addWidget(self.model_input)
+
+        self.status_label = QLabel(self.app.t("model_pull_status_idle"))
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        btn_row = QHBoxLayout()
+        self.pull_btn = QPushButton(self.app.t("model_pull_start_btn"))
+        self.pull_btn.setCursor(Qt.PointingHandCursor)
+        self.pull_btn.clicked.connect(self.start_pull)
+        btn_row.addWidget(self.pull_btn)
+
+        self.close_btn = QPushButton(self.app.t("model_pull_close_btn"))
+        self.close_btn.setProperty("variant", "danger")
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.clicked.connect(self.close)
+        btn_row.addWidget(self.close_btn)
+        layout.addLayout(btn_row)
+
+    def on_rec_selected(self, index):
+        data = self.rec_combo.currentData()
+        if data:
+            self.model_input.setText(data)
+
+    def start_pull(self):
+        target = self.model_input.text().strip()
+        if not target:
+            self.status_label.setText(self.app.t("model_pull_empty_name"))
+            return
+        self.pull_btn.setEnabled(False)
+        self.rec_combo.setEnabled(False)
+        self.model_input.setEnabled(False)
+        self.status_label.setText(self.app.t("model_pull_status_downloading", model=target, percent=0, mb="0 MB"))
+
+        def run_stream():
+            try:
+                last_msg = ""
+                for update in pull_model_stream(target):
+                    last_msg = update.get("status", "")
+                return True, target, last_msg
+            except Exception as err:
+                return False, target, str(err)
+
+        def on_done(result):
+            ok, model_name, msg = result
+            self.pull_btn.setEnabled(True)
+            self.rec_combo.setEnabled(True)
+            self.model_input.setEnabled(True)
+            if ok:
+                self.status_label.setText(self.app.t("model_pull_status_success", model=model_name))
+                self.app.switch_model(model_name)
+            else:
+                self.status_label.setText(self.app.t("model_pull_status_error", error=msg))
+
+        self.app.start_task(run_stream, on_done)
+
+
 class JugnuWindow(QMainWindow):
     def __init__(self, history_file=core.HISTORY_FILE, settings_file=core.SETTINGS_FILE):
         super().__init__()
@@ -321,6 +422,7 @@ class JugnuWindow(QMainWindow):
 
         self.tasks = []  # background requests that are still running
         self.closed = False
+        self.current_model = self.load_model_setting()
 
         self.build_ui()
         if self.chats:
@@ -389,6 +491,12 @@ class JugnuWindow(QMainWindow):
         self.header_title = QLabel(objectName="headerTitle")
         head.addWidget(self.header_title)
         head.addStretch(1)
+        self.model_btn = QPushButton()
+        self.model_btn.setObjectName("modelBtn")
+        self.model_btn.setCursor(Qt.PointingHandCursor)
+        self.model_btn.clicked.connect(self.show_model_menu)
+        self.model_sidebar_btn = self.model_btn
+        head.addWidget(self.model_btn)
         # Shown only while speech is playing (see poll_speech).
         self.stop_btn = QPushButton("⏹  Stop")
         self.stop_btn.setProperty("variant", "stop")
@@ -515,6 +623,7 @@ class JugnuWindow(QMainWindow):
         self.theme_btn.setText(self.theme_button_text())
         self.header_title.setText(self.t("header_title"))
         self.send_btn.setText(self.t("send_btn"))
+        self.update_model_button_text()
         if self.voice_dialog is not None:
             self.voice_dialog.retranslate()
         key, kwargs = self._status
@@ -530,7 +639,7 @@ class JugnuWindow(QMainWindow):
         core.save_settings(self.settings_file, dark_mode=self.dark_mode,
                            voice_enabled=self.voice_enabled, language=self.language,
                            voice_rate=self.voice_rate, voice_volume=self.voice_volume,
-                           voice_id=self.voice_id)
+                           voice_id=self.voice_id, default_model=getattr(self, "current_model", DEFAULT_MODEL))
 
     def save_history(self):
         try:
@@ -592,6 +701,7 @@ class JugnuWindow(QMainWindow):
     # ---------- Chats ----------
     def make_draft(self):
         self.draft_chat = core.new_chat()
+        self.draft_chat["model"] = getattr(self, "current_model", DEFAULT_MODEL)
         self.current_id = self.draft_chat["id"]
 
     def current_chat(self):
@@ -1113,11 +1223,58 @@ class JugnuWindow(QMainWindow):
         if hasattr(self, "refresh_history_list"):
             self.refresh_history_list()
 
+    # ---------- Models ----------
+    def load_model_setting(self):
+        return core.load_model_setting(self.settings_file)
+
+    def update_model_button_text(self):
+        if hasattr(self, "model_btn"):
+            current = getattr(self, "current_model", DEFAULT_MODEL)
+            self.model_btn.setText(self.t("model_btn", name=current) + " ▾")
+
+    def show_model_menu(self):
+        menu = QMenu(self)
+        menu.setAttribute(Qt.WA_DeleteOnClose)
+        header_action = menu.addAction(f"  {self.t('model_menu_title')}")
+        header_action.setEnabled(False)
+        menu.addSeparator()
+
+        models = fetch_local_models()
+        if not models:
+            empty_action = menu.addAction(self.t("model_no_models_found"))
+            empty_action.setEnabled(False)
+        else:
+            for m in models:
+                mark = "✓ " if m.name == self.current_model else "   "
+                action = menu.addAction(f"{mark}{m.display_name}")
+                action.triggered.connect(lambda checked=False, name=m.name: self.switch_model(name))
+
+        menu.addSeparator()
+        menu.addAction(self.t("model_menu_refresh"), self.refresh_models)
+        menu.addAction(self.t("model_menu_pull"), self.open_pull_dialog)
+        menu.popup(self.model_btn.mapToGlobal(self.model_btn.rect().bottomLeft()))
+
+    def refresh_models(self):
+        self.start_task(fetch_local_models, lambda _models: self.show_model_menu())
+
+    def switch_model(self, model_name):
+        self.current_model = model_name
+        self.update_model_button_text()
+        self.save_settings()
+        self.set_status("model_status_switching", name=model_name)
+        QTimer.singleShot(1500, lambda: self.set_status("status_ready"))
+
+    def open_pull_dialog(self):
+        dialog = ModelPullDialog(self)
+        dialog.exec()
+
     def ask_ollama(self, chat_id):
         # The worker gets a copy, so it never reads the list while the GUI changes it.
-        chat = {"messages": [dict(m) for m in self.find_chat(chat_id)["messages"]]}
+        target_chat = self.find_chat(chat_id) or {}
+        chat = {"messages": [dict(m) for m in target_chat.get("messages", [])], "model": target_chat.get("model") or getattr(self, "current_model", DEFAULT_MODEL)}
         language = self.language  # The prompt and any error text use the language chosen at send time.
-        self.start_task(lambda: (chat_id, *core.ask_ollama(chat, language)), self.on_answer)
+        model = chat.get("model")
+        self.start_task(lambda: (chat_id, *core.ask_ollama(chat, language, model=model)), self.on_answer)
 
     def on_answer(self, result):
         self.finish_answer(*result)

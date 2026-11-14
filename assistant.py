@@ -4,6 +4,7 @@ Only the terminal screen lives here: the greeting, the commands, and the wording
 of the messages. Everything shared with the desktop app (the model, the clock, the
 calculator and the request to Ollama) comes from core.py.
 """
+import argparse
 import json
 from pathlib import Path
 
@@ -18,6 +19,12 @@ from core import (
     local_now,
 )
 from export_manager import export_chat
+from models import (
+    DEFAULT_MODEL,
+    fetch_local_models,
+    format_bytes,
+    resolve_active_model,
+)
 from search_engine import SearchEngine
 
 # calculate() and is_time_question() now live in core.py; they stay importable from here.
@@ -74,8 +81,11 @@ def get_date():
 
 # ---------------- AI CHAT ----------------
 
-def ask_ai(user_message):
-    result = chat(build_messages(SYSTEM_PROMPT, [{"role": "user", "content": user_message}]))
+def ask_ai(user_message, model=None):
+    result = chat(
+        build_messages(SYSTEM_PROMPT, [{"role": "user", "content": user_message}]),
+        model=model,
+    )
 
     if result.ok:
         return result.answer
@@ -114,21 +124,25 @@ def show_help():
     print("1. time                  - Show current time")
     print("2. date                  - Show today's date")
     print("3. calculate <expr>      - Calculate a mathematical expression")
-    print("4. /search <query>       - Search across conversation history")
-    print("5. /export [id] <format> - Export chat to md, html, json, or txt")
-    print("6. /chats                - List all saved conversation history")
-    print("7. help                  - Show available commands")
-    print("8. bye                   - Exit the assistant")
+    print("4. /models               - List installed Ollama models")
+    print("5. /model <name>         - Switch active Ollama model")
+    print("6. /search <query>       - Search across conversation history")
+    print("7. /export [id] <format> - Export chat to md, html, json, or txt")
+    print("8. /chats                - List all saved conversation history")
+    print("9. help                  - Show available commands")
+    print("10. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
 # ---------------- MAIN ASSISTANT ----------------
 
-def run_assistant():
+def run_assistant(model=None):
+    active_model = resolve_active_model(model or DEFAULT_MODEL)
     greet()
 
     while True:
-        user_input = input("\nYou: ").strip()
+        prompt_prefix = f"\nYou ({active_model}): " if active_model != DEFAULT_MODEL else "\nYou: "
+        user_input = input(prompt_prefix).strip()
 
         if not user_input:
             continue
@@ -156,6 +170,28 @@ def run_assistant():
         elif command.startswith("calculate "):
             expression = user_input[10:].strip()
             print("\nAssistant:", calculate(expression))
+
+        # List models
+        elif command in ["/models", "models"]:
+            print("\nAssistant: Fetching installed Ollama models...")
+            models_list = fetch_local_models()
+            if not models_list:
+                print("No installed models found or Ollama is offline.")
+            else:
+                print(f"\nInstalled Models (Active: {active_model}):")
+                for m in models_list:
+                    star = "* " if m.name == active_model else "  "
+                    print(f" {star}{m.display_name}")
+
+        # Switch model
+        elif command.startswith("/model ") or command.startswith("model ") or command.startswith("/switch "):
+            parts = user_input.split(maxsplit=1)
+            new_model = parts[1].strip() if len(parts) > 1 else ""
+            if new_model:
+                active_model = new_model
+                print(f"\nAssistant: Switched active model to '{active_model}'.")
+            else:
+                print(f"\nAssistant: Current active model is '{active_model}'.")
 
         # Search conversations
         elif command.startswith("/search"):
@@ -217,12 +253,15 @@ def run_assistant():
 
         # General AI question
         else:
-            print("\nAssistant: ", end="", flush=True)
-            answer = ask_ai(user_input)
-            print(answer)
+            print(f"\nAssistant: Thinking ({active_model})...")
+            answer = ask_ai(user_input, model=active_model)
+            print("\nAssistant:", answer)
 
 
 # ---------------- START ----------------
 
 if __name__ == "__main__":
-    run_assistant()
+    parser = argparse.ArgumentParser(description="JUGNU Terminal Assistant")
+    parser.add_argument("--model", type=str, default=None, help="Ollama model to use")
+    args, _ = parser.parse_known_args()
+    run_assistant(model=args.model)
