@@ -74,7 +74,7 @@ git checkout -b fix/your-bugfix-name
 - If working with Ollama, ensure ollama run llama3.2:3b is accessible.
 - Test your changes:
   ```bash
-  python qt_app.py
+  python desktop_app.py
   python -m pytest
   ```
 

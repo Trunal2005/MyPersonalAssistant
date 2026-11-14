@@ -7,8 +7,8 @@ LONG_SENTENCE = ("A long sentence with **bold** words and a list below. " * 8) +
 
 
 def limit(window):
-    import qt_app
-    return qt_app.max_bubble_width(window.scroll.viewport().width())
+    import desktop_app
+    return desktop_app.max_bubble_width(window.scroll.viewport().width())
 
 
 def settle(qtbot, window):
@@ -18,8 +18,8 @@ def settle(qtbot, window):
 
 @pytest.mark.parametrize(("viewport", "expected"), [(300, 200), (800, 576), (1200, 720), (3000, 720)])
 def test_max_bubble_width_scales_and_caps_at_720(viewport, expected):
-    import qt_app
-    assert qt_app.max_bubble_width(viewport) == expected
+    import desktop_app
+    assert desktop_app.max_bubble_width(viewport) == expected
 
 
 def test_bubbles_do_not_overflow_at_minimum_window_size(qtbot, window):

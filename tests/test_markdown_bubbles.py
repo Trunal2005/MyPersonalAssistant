@@ -79,13 +79,13 @@ def test_each_code_block_copies_its_own_code(window):
 
 def test_message_copy_button_still_copies_the_original_markdown(qtbot, window):
     from PySide6.QtCore import Qt
-    import qt_app
+    import desktop_app
 
     bubble = window.add_bubble("assistant", "**bold** text")
     qtbot.mouseClick(bubble.copy_btn, Qt.LeftButton)
     assert clipboard() == "**bold** text"
-    assert bubble.copy_btn.text() == qt_app.COPIED_TEXT
-    qtbot.waitUntil(lambda: bubble.copy_btn.text() == qt_app.COPY_TEXT, timeout=3000)
+    assert bubble.copy_btn.text() == desktop_app.COPIED_TEXT
+    qtbot.waitUntil(lambda: bubble.copy_btn.text() == desktop_app.COPY_TEXT, timeout=3000)
 
 
 def test_copy_link_text_follows_the_language(window):
@@ -96,11 +96,11 @@ def test_copy_link_text_follows_the_language(window):
 
 
 def test_styling_failure_falls_back_to_plain_text(window, monkeypatch):
-    import qt_app
+    import desktop_app
 
     def broken(*args, **kwargs):
         raise RuntimeError("boom")
-    monkeypatch.setattr(qt_app, "render_html", broken)
+    monkeypatch.setattr(desktop_app, "render_html", broken)
     bubble = window.add_bubble("assistant", "**bold** and\n```\ncode\n```")
     assert shown(bubble) == "**bold** and\n```\ncode\n```"
     assert bubble.codes == []

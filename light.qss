@@ -1,4 +1,4 @@
-/* JUGNU's light theme (Qt Style Sheets). qt_app.py applies it with app.setStyleSheet().
+/* JUGNU's light theme (Qt Style Sheets). desktop_app.py applies it with app.setStyleSheet().
    dark.qss has the same rules with the dark colours, so change both files together.
    Colours match the LIGHT palette in jugnu_core.py, which the chat bubbles' Markdown uses. */
 

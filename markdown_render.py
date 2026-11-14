@@ -2,7 +2,7 @@
 
 It does not draw anything. It turns Markdown text into a flat list of `Seg`
 pieces (text + style names), and render_html() turns those pieces into HTML for
-the chat bubbles in qt_app.py.
+the chat bubbles in desktop_app.py.
 Keeping it free of any GUI code means it can be unit-tested without a window.
 
 Supported: **bold**, *italic*, ***both***, ~~strike~~, `inline code`,

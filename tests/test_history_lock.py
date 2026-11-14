@@ -94,11 +94,11 @@ def test_second_desktop_launch_reports_conflict(tmp_path):
 import sys
 from unittest.mock import patch
 
-import qt_app
+import desktop_app
 
-with patch.object(qt_app.QMessageBox, "critical") as critical, \\
-        patch.object(qt_app, "JugnuWindow") as window:
-    assert qt_app.main() == 1
+with patch.object(desktop_app.QMessageBox, "critical") as critical, \\
+        patch.object(desktop_app, "JugnuWindow") as window:
+    assert desktop_app.main() == 1
     assert critical.call_args.args[1] == "Chat history in use"
     window.assert_not_called()
 """

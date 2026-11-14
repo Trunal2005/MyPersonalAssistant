@@ -44,9 +44,9 @@ def make_window(qtbot, tmp_path, monkeypatch):
     """Build a window whose history and settings live in tmp_path. Optionally start from saved `history`."""
     pytest.importorskip("PySide6")
     import jugnu_core
-    import qt_app
+    import desktop_app
 
-    monkeypatch.setattr(qt_app, "TTSManager", FakeTTS)
+    monkeypatch.setattr(desktop_app, "TTSManager", FakeTTS)
     monkeypatch.setattr(jugnu_core, "warm_up", lambda: True)  # no Ollama call
     windows = []
 
@@ -54,7 +54,7 @@ def make_window(qtbot, tmp_path, monkeypatch):
         history_file = tmp_path / "jugnu_history.json"
         if history is not None:
             history_file.write_text(json.dumps(history), encoding="utf-8")
-        window = qt_app.JugnuWindow(history_file=str(history_file),
+        window = desktop_app.JugnuWindow(history_file=str(history_file),
                                     settings_file=str(tmp_path / "jugnu_settings.json"))
         qtbot.addWidget(window)
         window.resize(1100, 700)

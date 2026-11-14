@@ -65,7 +65,7 @@ pip install -r requirements.txt
 
 ### 5. Run JUGNU
 ```bash
-python qt_app.py
+python desktop_app.py
 ```
 
 ---

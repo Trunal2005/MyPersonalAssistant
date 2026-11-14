@@ -2,7 +2,7 @@
 
 All the logic (history, settings, local answers, the Ollama client) lives in jugnu_core.py;
 this file only draws it. The theme is in light.qss and dark.qss.
-Run it with:  python qt_app.py
+Run it with:  python desktop_app.py
 """
 import math
 import os
