@@ -20,6 +20,7 @@ import jugnu_core as core
 from export_manager import export_chat
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import plain_text, render_html
+from personas import get_default_manager, get_persona, list_personas
 from search_engine import SearchEngine
 from strings import get_string, next_language
 from tts import RATE_MAX, RATE_MIN, TTSManager
@@ -295,6 +296,187 @@ class VoiceSettingsDialog(QDialog):
         super().closeEvent(event)
 
 
+class PersonaDialog(QDialog):
+    """View, customize, create, and delete assistant personas."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.manager = app.persona_manager
+        self.setWindowTitle(app.t("persona_manage_title"))
+        self.setMinimumSize(600, 480)
+        self.selected_id = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
+
+        # Left list
+        left = QVBoxLayout()
+        self.list_widget = QListWidget()
+        self.list_widget.currentRowChanged.connect(self.on_select_persona)
+        left.addWidget(self.list_widget, 1)
+
+        self.new_btn = QPushButton(app.t("persona_new_btn"))
+        self.new_btn.clicked.connect(self.on_new)
+        left.addWidget(self.new_btn)
+        layout.addLayout(left, 1)
+
+        # Right form
+        right = QVBoxLayout()
+        right.setSpacing(8)
+
+        self.name_label = QLabel(app.t("persona_name_label"))
+        right.addWidget(self.name_label)
+        self.name_edit = QLineEdit()
+        right.addWidget(self.name_edit)
+
+        self.desc_label = QLabel(app.t("persona_desc_label"))
+        right.addWidget(self.desc_label)
+        self.desc_edit = QLineEdit()
+        right.addWidget(self.desc_edit)
+
+        self.temp_label = QLabel()
+        right.addWidget(self.temp_label)
+        self.temp_slider = QSlider(Qt.Horizontal)
+        self.temp_slider.setRange(0, 150)
+        self.temp_slider.setValue(60)
+        self.temp_slider.valueChanged.connect(self.on_temp_changed)
+        right.addWidget(self.temp_slider)
+
+        self.prompt_label = QLabel(app.t("persona_prompt_label"))
+        right.addWidget(self.prompt_label)
+        self.prompt_edit = QPlainTextEdit()
+        right.addWidget(self.prompt_edit, 1)
+
+        btn_row = QHBoxLayout()
+        self.save_btn = QPushButton(app.t("persona_save_btn"))
+        self.save_btn.clicked.connect(self.on_save)
+        btn_row.addWidget(self.save_btn)
+
+        self.delete_btn = QPushButton(app.t("persona_delete_btn"))
+        self.delete_btn.setProperty("variant", "danger")
+        self.delete_btn.clicked.connect(self.on_delete)
+        btn_row.addWidget(self.delete_btn)
+
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.close)
+        btn_row.addWidget(self.close_btn)
+
+        right.addLayout(btn_row)
+        layout.addLayout(right, 2)
+
+        self.on_temp_changed(self.temp_slider.value())
+        self.populate_list()
+
+    def on_temp_changed(self, val):
+        self.temp_label.setText(self.app.t("persona_temp_label", temp=f"{val / 100:.2f}"))
+
+    def populate_list(self, select_id=None):
+        self.list_widget.clear()
+        personas = self.manager.all()
+        target_row = 0
+        for idx, p in enumerate(personas):
+            item = QListWidgetItem(p.display_label)
+            item.setData(Qt.UserRole, p.id)
+            self.list_widget.addItem(item)
+            if select_id and p.id == select_id:
+                target_row = idx
+        if personas:
+            self.list_widget.setCurrentRow(target_row)
+
+    def on_select_persona(self, row):
+        if row < 0:
+            return
+        item = self.list_widget.item(row)
+        if not item:
+            return
+        persona_id = item.data(Qt.UserRole)
+        persona = self.manager.get(persona_id)
+        self.selected_id = persona.id
+        self.name_edit.setText(persona.name)
+        self.desc_edit.setText(persona.description)
+        self.temp_slider.setValue(round(persona.temperature * 100))
+        self.prompt_edit.setPlainText(persona.system_prompt)
+
+        is_builtin = persona.is_builtin
+        self.name_edit.setEnabled(not is_builtin)
+        self.desc_edit.setEnabled(not is_builtin)
+        self.temp_slider.setEnabled(not is_builtin)
+        self.prompt_edit.setEnabled(not is_builtin)
+        self.save_btn.setEnabled(not is_builtin)
+        self.delete_btn.setEnabled(not is_builtin)
+
+    def on_new(self):
+        self.selected_id = None
+        self.list_widget.setCurrentRow(-1)
+        self.name_edit.setEnabled(True)
+        self.desc_edit.setEnabled(True)
+        self.temp_slider.setEnabled(True)
+        self.prompt_edit.setEnabled(True)
+        self.save_btn.setEnabled(True)
+        self.delete_btn.setEnabled(False)
+
+        self.name_edit.setText("")
+        self.desc_edit.setText("")
+        self.temp_slider.setValue(60)
+        self.prompt_edit.setPlainText("You are a specialized AI assistant.\nProvide helpful and accurate answers.")
+        self.name_edit.setFocus()
+
+    def on_save(self):
+        name = self.name_edit.text().strip()
+        desc = self.desc_edit.text().strip()
+        temp = self.temp_slider.value() / 100
+        prompt = self.prompt_edit.toPlainText().strip()
+
+        if not name:
+            QMessageBox.warning(self, "Invalid Name", "Please enter a persona name.")
+            return
+        if not prompt:
+            QMessageBox.warning(self, "Invalid Prompt", "System prompt cannot be empty.")
+            return
+
+        try:
+            if self.selected_id:
+                p = self.manager.update_custom(self.selected_id, name=name, description=desc, system_prompt=prompt, temperature=temp)
+            else:
+                p = self.manager.add_custom(name=name, description=desc, system_prompt=prompt, temperature=temp)
+            self.app.refresh_personas_ui()
+            self.populate_list(select_id=p.id)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
+
+    def on_delete(self):
+        if not self.selected_id:
+            return
+        persona = self.manager.get(self.selected_id)
+        if persona.is_builtin:
+            return
+        if QMessageBox.question(
+            self,
+            "Confirm Delete",
+            self.app.t("persona_delete_confirm", name=persona.name),
+            QMessageBox.Yes | QMessageBox.No,
+        ) == QMessageBox.Yes:
+            self.manager.delete_custom(self.selected_id)
+            self.app.refresh_personas_ui()
+            self.populate_list()
+
+    def retranslate(self):
+        self.setWindowTitle(self.app.t("persona_manage_title"))
+        self.new_btn.setText(self.app.t("persona_new_btn"))
+        self.name_label.setText(self.app.t("persona_name_label"))
+        self.desc_label.setText(self.app.t("persona_desc_label"))
+        self.prompt_label.setText(self.app.t("persona_prompt_label"))
+        self.save_btn.setText(self.app.t("persona_save_btn"))
+        self.delete_btn.setText(self.app.t("persona_delete_btn"))
+        self.on_temp_changed(self.temp_slider.value())
+
+    def closeEvent(self, event):
+        self.app.persona_dialog = None
+        super().closeEvent(event)
+
+
 class JugnuWindow(QMainWindow):
     def __init__(self, history_file=core.HISTORY_FILE, settings_file=core.SETTINGS_FILE):
         super().__init__()
@@ -314,6 +496,8 @@ class JugnuWindow(QMainWindow):
         self.tts = TTSManager(rate=self.voice_rate, volume=self.voice_volume,
                               voice_id=self.voice_id)  # Offline voice output; runs on its own thread.
         self.voice_dialog = None
+        self.persona_manager = get_default_manager()
+        self.persona_dialog = None
         self._status = ("status_ready", {})  # Remembered so the status line can be re-translated.
         self._mono = None
         self.bubbles = []
@@ -369,6 +553,7 @@ class JugnuWindow(QMainWindow):
         side.addWidget(self.history_list, 1)
         self.clear_btn = self.sidebar_button(side, self.clear_chat)
         self.clear_btn.setProperty("variant", "danger")
+        self.persona_sidebar_btn = self.sidebar_button(side, self.open_persona_manager)
         self.voice_btn = self.sidebar_button(side, self.toggle_voice)
         self.voice_settings_btn = self.sidebar_button(side, self.open_voice_settings)
         self.language_btn = self.sidebar_button(side, self.toggle_language)
@@ -386,9 +571,23 @@ class JugnuWindow(QMainWindow):
         header.setFixedHeight(64)
         head = QHBoxLayout(header)
         head.setContentsMargins(22, 0, 18, 0)
+        head.setSpacing(10)
         self.header_title = QLabel(objectName="headerTitle")
         head.addWidget(self.header_title)
         head.addStretch(1)
+
+        self.persona_label = QLabel(objectName="personaLabel")
+        head.addWidget(self.persona_label)
+
+        self.persona_combo = QComboBox(objectName="personaCombo")
+        self.persona_combo.currentIndexChanged.connect(self.on_persona_picked)
+        head.addWidget(self.persona_combo)
+
+        self.persona_btn = QPushButton("⚙", objectName="personaBtn")
+        self.persona_btn.setCursor(Qt.PointingHandCursor)
+        self.persona_btn.setFixedWidth(36)
+        self.persona_btn.clicked.connect(self.open_persona_manager)
+        head.addWidget(self.persona_btn)
         # Shown only while speech is playing (see poll_speech).
         self.stop_btn = QPushButton("⏹  Stop")
         self.stop_btn.setProperty("variant", "stop")
@@ -509,6 +708,9 @@ class JugnuWindow(QMainWindow):
         self.history_label.setText(self.t("history_label"))
         self.search_entry.setPlaceholderText(self.t("search_placeholder"))
         self.clear_btn.setText(self.t("clear_chat_btn"))
+        self.persona_sidebar_btn.setText(self.t("sidebar_personas"))
+        self.persona_label.setText(self.t("persona_label"))
+        self.persona_btn.setToolTip(self.t("persona_manage_title"))
         self.voice_btn.setText(self.voice_button_text())
         self.voice_settings_btn.setText(self.t("voice_settings_btn"))
         self.language_btn.setText(self.t("language_btn", name=self.t("language_name")))
@@ -517,6 +719,9 @@ class JugnuWindow(QMainWindow):
         self.send_btn.setText(self.t("send_btn"))
         if self.voice_dialog is not None:
             self.voice_dialog.retranslate()
+        if self.persona_dialog is not None:
+            self.persona_dialog.retranslate()
+        self.refresh_personas_ui()
         key, kwargs = self._status
         self.set_status(key, **kwargs)
         self.display_chat()  # Redraw so the welcome screen and "You" labels switch too.
@@ -589,9 +794,59 @@ class JugnuWindow(QMainWindow):
         self.voice_dialog.raise_()
         self.voice_dialog.activateWindow()
 
+    # ---------- Personas ----------
+    def current_persona(self):
+        chat = self.current_chat()
+        persona_id = (chat.get("persona") if chat else None) or "default"
+        return self.persona_manager.get(persona_id)
+
+    def set_chat_persona(self, persona_id):
+        chat = self.current_chat()
+        if chat:
+            chat["persona"] = persona_id
+            self.save_history()
+        self.refresh_personas_ui()
+
+    def refresh_personas_ui(self):
+        if not hasattr(self, "persona_combo"):
+            return
+        self.persona_combo.blockSignals(True)
+        self.persona_combo.clear()
+        personas = self.persona_manager.all()
+        current_id = self.current_persona().id
+        active_index = 0
+        for idx, p in enumerate(personas):
+            self.persona_combo.addItem(p.display_label, p.id)
+            if p.id == current_id:
+                active_index = idx
+        self.persona_combo.setCurrentIndex(active_index)
+        self.persona_combo.blockSignals(False)
+
+    def on_persona_picked(self, index):
+        if index < 0:
+            return
+        persona_id = self.persona_combo.itemData(index)
+        if not persona_id:
+            return
+        chat = self.current_chat()
+        if chat and chat.get("persona") != persona_id:
+            chat["persona"] = persona_id
+            self.save_history()
+
+    def open_persona_manager(self):
+        if self.persona_dialog is None:
+            self.persona_dialog = PersonaDialog(self)
+        self.persona_dialog.show()
+        self.persona_dialog.raise_()
+        self.persona_dialog.activateWindow()
+
     # ---------- Chats ----------
     def make_draft(self):
         self.draft_chat = core.new_chat()
+        if hasattr(self, "persona_combo") and self.persona_combo.count() > 0:
+            current_p = self.persona_combo.currentData()
+            if current_p:
+                self.draft_chat["persona"] = current_p
         self.current_id = self.draft_chat["id"]
 
     def current_chat(self):
@@ -779,6 +1034,13 @@ class JugnuWindow(QMainWindow):
         self.clear_messages()
         self.refresh_history_list()
         chat = self.current_chat()
+        if hasattr(self, "persona_combo"):
+            persona_id = (chat.get("persona") if chat else None) or "default"
+            idx = self.persona_combo.findData(persona_id)
+            if idx >= 0:
+                self.persona_combo.blockSignals(True)
+                self.persona_combo.setCurrentIndex(idx)
+                self.persona_combo.blockSignals(False)
         messages = chat.get("messages", []) if chat else []
         if not messages:
             self.show_welcome()
@@ -1115,7 +1377,13 @@ class JugnuWindow(QMainWindow):
 
     def ask_ollama(self, chat_id):
         # The worker gets a copy, so it never reads the list while the GUI changes it.
-        chat = {"messages": [dict(m) for m in self.find_chat(chat_id)["messages"]]}
+        chat_doc = self.find_chat(chat_id)
+        if chat_doc is None and self.draft_chat and self.draft_chat.get("id") == chat_id:
+            chat_doc = self.draft_chat
+        chat = {
+            "messages": [dict(m) for m in (chat_doc["messages"] if chat_doc else [])],
+            "persona": chat_doc.get("persona", "default") if chat_doc else "default",
+        }
         language = self.language  # The prompt and any error text use the language chosen at send time.
         self.start_task(lambda: (chat_id, *core.ask_ollama(chat, language)), self.on_answer)
 

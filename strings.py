@@ -68,6 +68,20 @@ STRINGS = {
         "export_success_title": "Export Successful",
         "export_success_msg": "Chat successfully exported to {path}",
         "export_error_msg": "Could not export chat: {error}",
+        # Personas
+        "sidebar_personas": "🎭  Personas",
+        "persona_label": "Persona:",
+        "persona_manage_title": "Manage Personas",
+        "persona_new_btn": "+ New Persona",
+        "persona_save_btn": "Save Persona",
+        "persona_delete_btn": "Delete",
+        "persona_name_label": "Name:",
+        "persona_desc_label": "Description:",
+        "persona_temp_label": "Creativity (Temperature: {temp}):",
+        "persona_prompt_label": "System Instructions:",
+        "persona_delete_confirm": "Delete persona “{name}”? This cannot be undone.",
+        "persona_builtin_badge": "Built-in",
+        "persona_custom_badge": "Custom",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -137,6 +151,20 @@ STRINGS = {
         "export_success_title": "Export Ho Gaya",
         "export_success_msg": "Chat safaltapoorvak {path} par export ho gayi",
         "export_error_msg": "Chat export nahi ho saki: {error}",
+        # Personas
+        "sidebar_personas": "🎭  Personas",
+        "persona_label": "Persona:",
+        "persona_manage_title": "Personas Manage Karein",
+        "persona_new_btn": "+ Naya Persona",
+        "persona_save_btn": "Save Persona",
+        "persona_delete_btn": "Delete",
+        "persona_name_label": "Naam:",
+        "persona_desc_label": "Description:",
+        "persona_temp_label": "Creativity (Temperature: {temp}):",
+        "persona_prompt_label": "System Instructions:",
+        "persona_delete_confirm": "Kya aap “{name}” ko delete karna chahte hain?",
+        "persona_builtin_badge": "Built-in",
+        "persona_custom_badge": "Custom",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",
@@ -195,8 +223,12 @@ def get_string(language, key, **kwargs):
     return text
 
 
-def build_system_prompt(language, now_text):
+def build_system_prompt(language, now_text, persona=None):
     """System prompt for the model: persona, reply-language rule, and the clock."""
-    return (SYSTEM_PROMPT_INTRO
+    if persona and hasattr(persona, "system_prompt") and persona.system_prompt:
+        intro = persona.system_prompt.strip() + " "
+    else:
+        intro = SYSTEM_PROMPT_INTRO
+    return (intro
             + get_string(language, "prompt_language_rule")
             + SYSTEM_PROMPT_CLOCK.format(now=now_text))

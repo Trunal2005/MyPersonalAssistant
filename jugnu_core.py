@@ -317,8 +317,14 @@ def local_answer(text, language):
     return None
 
 
-def model_messages(chat, language):
+def model_messages(chat, language, persona=None):
     """The messages sent to Ollama: the system prompt plus recent turns, without failure notices."""
+    if persona is None and isinstance(chat, dict) and chat.get("persona"):
+        try:
+            from personas import get_persona
+            persona = get_persona(chat["persona"])
+        except Exception:
+            persona = None
     # Keep recent context only, to reduce prompt size and improve latency.
     recent = [
         m for m in chat.get("messages", [])
@@ -326,21 +332,28 @@ def model_messages(chat, language):
     ][-10:]
     messages = [{
         "role": "system",
-        "content": build_system_prompt(language, local_datetime_text())
+        "content": build_system_prompt(language, local_datetime_text(), persona=persona)
     }]
     messages.extend({"role": m["role"], "content": m["content"]} for m in recent)
     return messages
 
 
-def ask_ollama(chat, language):
+def ask_ollama(chat, language, persona=None):
     """Ask the model for the next reply in `chat`. Blocks; returns (answer, is_error) and never raises."""
+    if persona is None and isinstance(chat, dict) and chat.get("persona"):
+        try:
+            from personas import get_persona
+            persona = get_persona(chat["persona"])
+        except Exception:
+            persona = None
+    temp = persona.temperature if persona and hasattr(persona, "temperature") else 0.6
     try:
         response = requests.post(OLLAMA_URL, json={
             "model": MODEL,
-            "messages": model_messages(chat, language),
+            "messages": model_messages(chat, language, persona=persona),
             "stream": False,
             "keep_alive": "10m",
-            "options": {"num_predict": 256, "temperature": 0.6}
+            "options": {"num_predict": 256, "temperature": temp}
         }, timeout=180)
         response.raise_for_status()
         answer = ollama_answer(response.json())

@@ -18,6 +18,7 @@ from core import (
     local_now,
 )
 from export_manager import export_chat
+from personas import get_persona, list_personas
 from search_engine import SearchEngine
 
 # calculate() and is_time_question() now live in core.py; they stay importable from here.
@@ -74,8 +75,15 @@ def get_date():
 
 # ---------------- AI CHAT ----------------
 
-def ask_ai(user_message):
-    result = chat(build_messages(SYSTEM_PROMPT, [{"role": "user", "content": user_message}]))
+def ask_ai(user_message, persona=None):
+    if isinstance(persona, str):
+        persona = get_persona(persona)
+    system_prompt = (persona.system_prompt + "\n\n") if persona and getattr(persona, "system_prompt", None) else SYSTEM_PROMPT
+    options = {"temperature": persona.temperature} if persona and hasattr(persona, "temperature") else None
+    result = chat(
+        build_messages(system_prompt, [{"role": "user", "content": user_message}]),
+        options=options,
+    )
 
     if result.ok:
         return result.answer
@@ -114,18 +122,23 @@ def show_help():
     print("1. time                  - Show current time")
     print("2. date                  - Show today's date")
     print("3. calculate <expr>      - Calculate a mathematical expression")
-    print("4. /search <query>       - Search across conversation history")
-    print("5. /export [id] <format> - Export chat to md, html, json, or txt")
-    print("6. /chats                - List all saved conversation history")
-    print("7. help                  - Show available commands")
-    print("8. bye                   - Exit the assistant")
+    print("4. personas              - List all available assistant personas")
+    print("5. persona <name>        - Switch active persona (e.g. persona code)")
+    print("6. /search <query>       - Search across conversation history")
+    print("7. /export [id] <format> - Export chat to md, html, json, or txt")
+    print("8. /chats                - List all saved conversation history")
+    print("9. help                  - Show available commands")
+    print("10. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
 # ---------------- MAIN ASSISTANT ----------------
 
-def run_assistant():
+def run_assistant(persona_name="default"):
+    active_persona = get_persona(persona_name)
     greet()
+    if active_persona and active_persona.id != "default":
+        print(f"Active Persona: {active_persona.display_label} (temp: {active_persona.temperature})")
 
     while True:
         user_input = input("\nYou: ").strip()
@@ -143,6 +156,28 @@ def run_assistant():
         # Help
         elif command == "help":
             show_help()
+
+        # Personas list
+        elif command in ["personas", "/personas"]:
+            print("\nAvailable Personas:")
+            for p in list_personas():
+                curr = " (Active)" if p.id == active_persona.id else ""
+                print(f"- {p.display_label} [{p.id}] (temp: {p.temperature}){curr}")
+                print(f"  {p.description}")
+
+        # Persona switch
+        elif command.startswith("persona ") or command.startswith("/persona "):
+            parts = user_input.split(maxsplit=1)
+            target = parts[1].strip() if len(parts) > 1 else ""
+            if not target:
+                print("\nAssistant: Please specify a persona name or ID, e.g. persona code")
+            else:
+                active_persona = get_persona(target)
+                print(f"\nAssistant: Switched persona to {active_persona.display_label} (temp: {active_persona.temperature})")
+
+        elif command in ["persona", "/persona"]:
+            print(f"\nAssistant: Current persona is {active_persona.display_label} (temp: {active_persona.temperature})")
+            print(f"Description: {active_persona.description}")
 
         # Time
         elif command in ["time", "what is the time", "what time is it"]:
@@ -218,11 +253,15 @@ def run_assistant():
         # General AI question
         else:
             print("\nAssistant: ", end="", flush=True)
-            answer = ask_ai(user_input)
+            answer = ask_ai(user_input, persona=active_persona)
             print(answer)
 
 
 # ---------------- START ----------------
 
 if __name__ == "__main__":
-    run_assistant()
+    import argparse
+    parser = argparse.ArgumentParser(description="JUGNU CLI Assistant")
+    parser.add_argument("--persona", default="default", help="Initial persona (default, code, creative, tutor, concise)")
+    cli_args, _ = parser.parse_known_args()
+    run_assistant(persona_name=cli_args.persona)
