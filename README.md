@@ -1,10 +1,10 @@
 # JUGNU – Personal AI Assistant 🤖
 
 [![Winter of Code Social 2026](https://img.shields.io/badge/WOCS-2026-blue?style=for-the-badge&logo=github)](https://woc.codesocial.tech)
-[![Python](https://img.shields.io/badge/Python-3.8+-yellow?style=for-the-badge&logo=python)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.9+-yellow?style=for-the-badge&logo=python)](https://python.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=for-the-badge)](CONTRIBUTING.md)
 
-**JUGNU (Just an Unusually Genius Neural Utility)** is a personal desktop AI assistant built using Python, Tkinter, Ollama, and Llama 3.2.
+**JUGNU (Just an Unusually Genius Neural Utility)** is a personal desktop AI assistant built using Python, Qt (PySide6), Ollama, and Llama 3.2.
 
 JUGNU is designed to provide a simple and friendly AI chat experience while exploring practical AI and Machine Learning applications on the desktop.
 
@@ -40,7 +40,7 @@ Contributors can earn points on the leaderboard based on merged PRs tagged with:
 ## 🛠️ Tech Stack
 
 - **Language**: Python
-- **GUI**: Tkinter / ttk
+- **GUI**: PySide6 (Qt for Python), themed with Qt Style Sheets (`light.qss` / `dark.qss`)
 - **LLM Engine**: Ollama (Llama 3.2 3B)
 - **Networking**: Requests, JSON
 
@@ -64,26 +64,26 @@ If something must behave the same in the window and in the terminal, it belongs 
 ## ⚙️ Setup Instructions
 
 ### 1. Install Python
-Ensure Python 3.8+ is installed on your system.
+Ensure Python 3.9+ is installed on your system.
 
 ### 2. Install Ollama
 Download and install Ollama from [ollama.com](https://ollama.com/).
 
 ### 3. Download the AI Model
 Open your terminal and run:
-`ash
+```bash
 ollama pull llama3.2:3b
-`
+```
 
 ### 4. Install Dependencies
-`ash
-pip install requests
-`
+```bash
+pip install -r requirements.txt
+```
 
 ### 5. Run JUGNU
-`ash
+```bash
 python desktop_app.py
-`
+```
 
 Prefer the terminal? Run `python assistant.py` instead. It uses the same core.
 
@@ -125,7 +125,7 @@ python -m pytest tests/test_time_question.py -v
 
 The test suite covers calculator operations, error handling, unsupported expressions, time/date question detection, and the shared core (`core.py`: building messages, talking to Ollama, and reporting errors).
 
-**Note:** Running the tests does not require launching the Tkinter desktop application or starting the Ollama server.
+**Note:** Running the tests does not require starting the Ollama server. The window tests run offscreen with `pytest-qt`, so no window opens; the app's logic (`jugnu_core.py`) is tested without any GUI.
 
 
 ## 👩‍💻 Project Admin

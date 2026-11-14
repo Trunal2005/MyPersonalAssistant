@@ -1,261 +1,323 @@
-import tkinter as tk
-from tkinter import messagebox
-from tkinter import font as tkfont
+"""JUGNU's desktop window, built with PySide6 and themed with Qt Style Sheets.
+
+All the logic (history, settings, local answers, the Ollama client) lives in jugnu_core.py;
+this file only draws it. The theme is in light.qss and dark.qss.
+Run it with:  python desktop_app.py
+"""
 import math
-import json
-import threading
-import uuid
 import os
 import sys
-import tempfile
-import ast
-import re
 
-from core import (
-    ERROR_CONNECTION, ERROR_INVALID, ERROR_TIMEOUT, build_messages, calculate,
-    chat as ollama_chat, is_time_question as detect_time_question, local_datetime_text, local_now,
-)
-from strings import build_system_prompt, get_string, next_language, normalize_language
-from tts import TTSManager, DEFAULT_RATE, DEFAULT_VOLUME, RATE_MIN, RATE_MAX, clamp
+from PySide6.QtCore import QEvent, QThread, Qt, QTimer, Signal
+from PySide6.QtGui import QFontDatabase, QKeySequence, QPixmap, QShortcut, QTextOption
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFrame, QHBoxLayout, QInputDialog,
+                               QLabel, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
+                               QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
+                               QTextBrowser, QVBoxLayout, QWidget)
+
+import jugnu_core as core
 from history_lock import HistoryInUseError, HistoryLock
-from markdown_render import render_markdown, plain_text
+from markdown_render import plain_text, render_html
+from strings import get_string, next_language
+from tts import RATE_MAX, RATE_MIN, TTSManager
 
-APP_TITLE = "JUGNU | Just an Unusually Genius Neural Utility"
-HISTORY_FILE = "jugnu_history.json"
-SETTINGS_FILE = "jugnu_settings.json"
-MAX_LIST_TITLE = 34    # longer chat titles are shortened with "…" in the sidebar list
-MAX_TITLE_LENGTH = 60  # longest title a user can give a chat
-# Markdown styles that indent their lines; bubbles get a few extra columns so those lines do not wrap early.
-INDENT_TAGS = ("code", "codehead", "quote") + tuple("li%d" % n for n in range(5))
-
-
-class InvalidOllamaResponse(ValueError):
-    """The decoded response does not contain a usable chat message."""
+HERE = os.path.dirname(os.path.abspath(__file__))
+BUBBLE_PT = 10        # chat text size, in points
+COPY_TEXT = "⧉ Copy"
+COPIED_TEXT = "✓ Copied!"
 
 
-def ollama_answer(data):
-    if not isinstance(data, dict):
-        raise InvalidOllamaResponse()
-    message = data.get("message")
-    if not isinstance(message, dict):
-        raise InvalidOllamaResponse()
-    content = message.get("content")
-    if not isinstance(content, str):
-        raise InvalidOllamaResponse()
-    return content.strip()
+def load_stylesheet(dark_mode):
+    """The whole theme: dark.qss or light.qss, from beside this file."""
+    with open(os.path.join(HERE, "dark.qss" if dark_mode else "light.qss"), encoding="utf-8") as f:
+        return f.read()
 
 
-def ollama_stream_chunk(data):
-    """Extract (token, is_done) from an Ollama stream chunk dictionary.
+def max_bubble_width(viewport_width):
+    """Widest a bubble may be, keeping it inside the chat area with room to show who sent it."""
+    return max(40, min(720, viewport_width - 100, int(viewport_width * 0.72)))
 
-    Raises InvalidOllamaResponse if data is not a dictionary or has an invalid structure.
+
+def repolish(widget):
+    """Re-apply the style sheet after a property used by a selector (variant, state) changed."""
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+
+
+class Task(QThread):
+    """Runs one blocking call (an Ollama request) off the GUI thread.
+
+    `done` is emitted from the worker thread; Qt queues it, so the connected slot runs on the
+    GUI thread. The work itself never touches a widget.
     """
-    if not isinstance(data, dict):
-        raise InvalidOllamaResponse()
-    done = bool(data.get("done", False))
-    if done and "message" not in data:
-        return "", True
+    done = Signal(object)
 
-    message = data.get("message")
-    if not isinstance(message, dict):
-        raise InvalidOllamaResponse()
-    content = message.get("content")
-    if not isinstance(content, str):
-        raise InvalidOllamaResponse()
-    return content, done
+    def __init__(self, work, parent=None):
+        super().__init__(parent)
+        self.work = work
+
+    def run(self):
+        self.done.emit(self.work())
 
 
-def iter_response_lines(response):
-    """Yield lines from a requests response, supporting both live streaming and mock _content."""
-    if getattr(response, "raw", None) is not None:
-        yield from response.iter_lines()
-    elif getattr(response, "_content", None):
-        for line in response._content.splitlines():
-            yield line
+class InputBox(QPlainTextEdit):
+    """The message box. Enter sends; Shift+Enter starts a new line."""
+    submitted = Signal()
 
-LIGHT = {
-    "bg": "#F7F4FF", "sidebar": "#EEE8FF", "panel": "#FFFFFF",
-    "text": "#27213B", "muted": "#756B91", "accent": "#8B5CF6",
-    "accent2": "#EC4899", "user": "#E3DCFF", "assistant": "#F0EAFB",
-    "entry": "#FFFFFF", "border": "#D9CFF5", "danger": "#FCE7F3",
-    "code": "#FFFFFF", "inline_code": "#E2D9F7"
-}
-DARK = {
-    "bg": "#191728", "sidebar": "#211D35", "panel": "#28223D",
-    "text": "#F4EEFF", "muted": "#B7A9D8", "accent": "#8B6CF0",
-    "accent2": "#D946A6", "user": "#34365A", "assistant": "#2A2440",
-    "entry": "#2A2440", "border": "#463A66", "danger": "#4B2A40",
-    "code": "#17142A", "inline_code": "#3A3157"
-}
-
-def message_time_text():
-    return local_now().strftime("%I:%M %p")
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not event.modifiers() & Qt.ShiftModifier:
+            self.submitted.emit()
+            return
+        super().keyPressEvent(event)
 
 
-class FlatButton(tk.Label):
-    """A tk.Label that behaves like a tk.Button.
+class BubbleText(QTextBrowser):
+    """A message's text: read-only, selectable, as tall as its content and never scrolling itself."""
+    copy_all = Signal()
 
-    On macOS, Tk draws tk.Button with the native Aqua style and ignores bg and
-    activebackground, so themed buttons (white text) become unreadable. A Label
-    respects every colour option, so it is used as the button there instead.
-    It accepts the same options as tk.Button, including command and state.
-    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("bubbleText")
+        self.setOpenLinks(False)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Long words and URLs wrap anywhere rather than running out of the bubble.
+        self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.document().setDocumentMargin(0)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
-    def __init__(self, master=None, command=None, **kwargs):
-        super().__init__(master, **kwargs)
-        self._command = command
-        self._pressed = False
-        # Class-level bindings live in their own bindtag, so a widget's own
-        # bind("<Enter>", ...) (like the Copy button's hover) does not replace them.
-        self.bindtags((self.bindtags()[0], "FlatButton") + self.bindtags()[1:])
-        if not self.bind_class("FlatButton"):
-            self.bind_class("FlatButton", "<Enter>", FlatButton._on_enter)
-            self.bind_class("FlatButton", "<Leave>", FlatButton._on_leave)
-            self.bind_class("FlatButton", "<ButtonPress-1>", FlatButton._on_press)
-            self.bind_class("FlatButton", "<ButtonRelease-1>", FlatButton._on_release)
+    def fit(self, max_width):
+        """Size to the text: as narrow as it allows, at most `max_width`, and exactly as tall."""
+        # Measure a copy: the widget lays out its own document at its current width, not ours.
+        doc = self.document().clone(self)
+        doc.setTextWidth(max_width)
+        width = min(max_width, math.ceil(doc.idealWidth()) + 2)
+        doc.setTextWidth(width)
+        self.setFixedSize(width, math.ceil(doc.size().height()) + 2)
+        doc.deleteLater()
 
-    def configure(self, cnf=None, **kwargs):
-        if "command" in kwargs:
-            self._command = kwargs.pop("command")
-        if cnf is None and not kwargs:
-            return super().configure()
-        return super().configure(cnf, **kwargs)
+    def wheelEvent(self, event):
+        event.ignore()  # let the chat area scroll instead
 
-    config = configure
+    def contextMenuEvent(self, event):
+        menu = self.createStandardContextMenu(event.pos())
+        menu.addAction("Copy All", self.copy_all.emit)
+        menu.exec(event.globalPos())
 
-    def invoke(self):
-        if str(self["state"]) != "disabled" and self._command:
-            return self._command()
+
+class Bubble(QFrame):
+    """One chat message: name, time, Copy (and Read aloud for replies) above the text."""
+
+    def __init__(self, app, role, text, timestamp=None):
+        super().__init__()
+        self.app, self.text = app, text
+        is_user = role == "user"
+        self.setObjectName("bubble")
+        self.setProperty("role", "user" if is_user else "assistant")
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.codes = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 10)
+        layout.setSpacing(4)
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        self.name_label = QLabel(app.t("you_label") if is_user else "🤖 JUGNU")
+        self.name_label.setObjectName("bubbleName")
+        header.addWidget(self.name_label)
+        self.time_label = None
+        if timestamp:
+            self.time_label = QLabel(timestamp)
+            self.time_label.setObjectName("bubbleTime")
+            header.addWidget(self.time_label)
+        header.addStretch(1)
+        self.copy_btn = self.small_button(COPY_TEXT, self.copy_message)
+        header.addWidget(self.copy_btn)
+        self.read_btn = None
+        if not is_user:
+            self.read_btn = self.small_button("🔊", lambda: app.read_aloud(text))
+            self.read_btn.setEnabled(app.tts.available)
+            header.addWidget(self.read_btn)
+        layout.addLayout(header)
+
+        self.body = BubbleText(self)
+        self.body.setFont(app.bubble_font())
+        if is_user:
+            self.body.setPlainText(text)  # what you type is always shown exactly as typed
+        else:
+            self.show_markdown(app.t("code_copy_btn"))
+        self.body.anchorClicked.connect(self.on_link)
+        self.body.copy_all.connect(self.copy_message)
+        layout.addWidget(self.body)
+
+    def small_button(self, text, slot):
+        button = QPushButton(text)
+        button.setProperty("variant", "ghost")
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(slot)
+        return button
+
+    def show_markdown(self, copy_label):
+        """Show the reply as styled Markdown. If anything goes wrong, show the plain message instead."""
+        try:
+            html, self.codes = render_html(self.text, self.app.colors, mono=self.app.mono_family(),
+                                           base_pt=BUBBLE_PT, copy_label=copy_label)
+            self.body.setHtml(html)
+        except Exception:
+            self.codes = []
+            self.body.setPlainText(self.text)
+
+    def fit(self, max_width):
+        self.body.fit(max_width)
+
+    def copy_message(self):
+        QApplication.clipboard().setText(self.text)
+        self.copy_btn.setText(COPIED_TEXT)
+        self.copy_btn.setProperty("state", "copied")
+        repolish(self.copy_btn)
+        QTimer.singleShot(1500, self, self.reset_copy_button)
+
+    def reset_copy_button(self):
+        self.copy_btn.setText(COPY_TEXT)
+        self.copy_btn.setProperty("state", "")
+        repolish(self.copy_btn)
+
+    def on_link(self, url):
+        # Only the code blocks' own "Copy" links do anything; other links are just shown.
+        target = url.toString()
+        if target.startswith("copy:"):
+            index = int(target[5:])
+            if 0 <= index < len(self.codes):
+                QApplication.clipboard().setText(self.codes[index])
+                self.show_markdown(self.app.t("code_copied_btn"))
+                QTimer.singleShot(1500, self, lambda: self.show_markdown(self.app.t("code_copy_btn")))
+
+
+class VoiceSettingsDialog(QDialog):
+    """Speed, volume and voice. Changes are heard from the next sentence and saved as you go."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.setModal(False)
+        self.setMinimumWidth(340)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 14, 20, 18)
+        layout.setSpacing(6)
+
+        self.rate_label = self.field_label()
+        self.rate = QSlider(Qt.Horizontal)
+        self.rate.setRange(RATE_MIN, RATE_MAX)
+        self.rate.setSingleStep(5)
+        self.rate.setPageStep(25)
+        self.volume_label = self.field_label()
+        self.volume = QSlider(Qt.Horizontal)
+        self.volume.setRange(0, 100)
+        self.volume.setSingleStep(5)
+        self.voice_label = self.field_label()
+        self.voice = QComboBox()
+        self.test_btn = QPushButton()
+        self.close_btn = QPushButton()
+        self.close_btn.setProperty("variant", "danger")
+        for widget in (self.rate_label, self.rate, self.volume_label, self.volume,
+                       self.voice_label, self.voice):
+            layout.addWidget(widget)
+        layout.addSpacing(12)
+        layout.addWidget(self.test_btn)
+        layout.addWidget(self.close_btn)
+
+        # Set the starting positions first, then connect, so opening the window never rewrites the saved values.
+        self.rate.setValue(app.voice_rate)
+        self.volume.setValue(round(app.voice_volume * 100))
+        self.rate.valueChanged.connect(self.on_rate)
+        self.volume.valueChanged.connect(self.on_volume)
+        self.rate.sliderReleased.connect(app.save_settings)
+        self.volume.sliderReleased.connect(app.save_settings)
+        self.voice.activated.connect(self.on_voice)
+        self.test_btn.clicked.connect(app.test_voice)
+        self.close_btn.clicked.connect(self.close)
+        self.retranslate()
 
     @staticmethod
-    def _on_enter(event):
-        widget = event.widget
-        if str(widget["state"]) != "disabled":
-            widget.configure(state="active")  # shows activebackground / activeforeground
+    def field_label():
+        label = QLabel()
+        label.setProperty("variant", "field")
+        return label
 
-    @staticmethod
-    def _on_leave(event):
-        widget = event.widget
-        widget._pressed = False
-        if str(widget["state"]) != "disabled":
-            widget.configure(state="normal")
+    def voice_choices(self):
+        """Dropdown entries: the default first, then every installed voice (names made unique)."""
+        choices, seen = [(self.app.t("voice_default_name"), None)], {}
+        for vid, name in self.app.tts.voices:
+            seen[name] = seen.get(name, 0) + 1
+            choices.append((name if seen[name] == 1 else f"{name} ({seen[name]})", vid))
+        return choices
 
-    @staticmethod
-    def _on_press(event):
-        event.widget._pressed = str(event.widget["state"]) != "disabled"
+    def retranslate(self):
+        app = self.app
+        self.setWindowTitle(app.t("voice_settings_title"))
+        self.update_value_labels()
+        self.voice_label.setText(app.t("voice_choice_label"))
+        self.test_btn.setText(app.t("voice_test_btn"))
+        self.close_btn.setText(app.t("voice_close_btn"))
+        # The default entry's name depends on the language, so rebuild the list.
+        self.voice.clear()
+        for label, vid in self.voice_choices():
+            self.voice.addItem(label, vid)
+        # A saved voice that is no longer installed shows (and plays) as the default.
+        index = self.voice.findData(app.voice_id) if app.voice_id else 0
+        self.voice.setCurrentIndex(max(index, 0))
 
-    @staticmethod
-    def _on_release(event):
-        widget = event.widget
-        inside = 0 <= event.x < widget.winfo_width() and 0 <= event.y < widget.winfo_height()
-        if widget._pressed and inside:
-            widget._pressed = False
-            widget.invoke()
-        widget._pressed = False
+    def update_value_labels(self):
+        self.rate_label.setText(self.app.t("voice_rate_label", value=self.app.voice_rate))
+        self.volume_label.setText(self.app.t("voice_volume_label", value=round(self.app.voice_volume * 100)))
 
+    def on_rate(self, value):
+        self.app.voice_rate = int(value)
+        self.app.push_voice_settings()
+        self.update_value_labels()
 
-# tk.Button keeps the native look elsewhere; on macOS it ignores the theme colours.
-Button = FlatButton if sys.platform == "darwin" else tk.Button
+    def on_volume(self, value):
+        self.app.voice_volume = int(value) / 100
+        self.app.push_voice_settings()
+        self.update_value_labels()
 
+    def on_voice(self, index):
+        self.app.voice_id = self.voice.itemData(index)
+        self.app.push_voice_settings()
+        self.app.save_settings()
 
-class FlatButton(tk.Label):
-    """A tk.Label that behaves like a tk.Button.
-
-    On macOS, Tk draws tk.Button with the native Aqua style and ignores bg and
-    activebackground, so themed buttons (white text) become unreadable. A Label
-    respects every colour option, so it is used as the button there instead.
-    It accepts the same options as tk.Button, including command and state.
-    """
-
-    def __init__(self, master=None, command=None, **kwargs):
-        super().__init__(master, **kwargs)
-        self._command = command
-        self._pressed = False
-        # Class-level bindings live in their own bindtag, so a widget's own
-        # bind("<Enter>", ...) (like the Copy button's hover) does not replace them.
-        self.bindtags((self.bindtags()[0], "FlatButton") + self.bindtags()[1:])
-        if not self.bind_class("FlatButton"):
-            self.bind_class("FlatButton", "<Enter>", FlatButton._on_enter)
-            self.bind_class("FlatButton", "<Leave>", FlatButton._on_leave)
-            self.bind_class("FlatButton", "<ButtonPress-1>", FlatButton._on_press)
-            self.bind_class("FlatButton", "<ButtonRelease-1>", FlatButton._on_release)
-
-    def configure(self, cnf=None, **kwargs):
-        if "command" in kwargs:
-            self._command = kwargs.pop("command")
-        if cnf is None and not kwargs:
-            return super().configure()
-        return super().configure(cnf, **kwargs)
-
-    config = configure
-
-    def invoke(self):
-        if str(self["state"]) != "disabled" and self._command:
-            return self._command()
-
-    @staticmethod
-    def _on_enter(event):
-        widget = event.widget
-        if str(widget["state"]) != "disabled":
-            widget.configure(state="active")  # shows activebackground / activeforeground
-
-    @staticmethod
-    def _on_leave(event):
-        widget = event.widget
-        widget._pressed = False
-        if str(widget["state"]) != "disabled":
-            widget.configure(state="normal")
-
-    @staticmethod
-    def _on_press(event):
-        event.widget._pressed = str(event.widget["state"]) != "disabled"
-
-    @staticmethod
-    def _on_release(event):
-        widget = event.widget
-        inside = 0 <= event.x < widget.winfo_width() and 0 <= event.y < widget.winfo_height()
-        if widget._pressed and inside:
-            widget._pressed = False
-            widget.invoke()
-        widget._pressed = False
+    def closeEvent(self, event):
+        self.app.save_settings()
+        super().closeEvent(event)
 
 
-# tk.Button keeps the native look elsewhere; on macOS it ignores the theme colours.
-Button = FlatButton if sys.platform == "darwin" else tk.Button
+class JugnuWindow(QMainWindow):
+    def __init__(self, history_file=core.HISTORY_FILE, settings_file=core.SETTINGS_FILE):
+        super().__init__()
+        self.history_file, self.settings_file = history_file, settings_file
+        self.setWindowTitle(core.APP_TITLE)
+        self.resize(1200, 760)
+        self.setMinimumSize(850, 570)
 
-class JugnuApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title(APP_TITLE)
-        self.root.geometry("1200x760")
-        self.root.minsize(850, 570)
-
-        self.chats = self.load_history()
+        self.chats = core.load_history(history_file)
         self.current_id = None
         self.draft_chat = None  # Unsaved empty chat; saved only after first message.
         self.busy = False
-        self.dark_mode = self.load_settings()
-        self.colors = DARK if self.dark_mode else LIGHT
-        self.voice_rate, self.voice_volume, self.voice_id = self.load_voice_prefs()
+        self.dark_mode = core.load_dark_mode(settings_file)
+        self.voice_enabled = core.load_voice_enabled(settings_file)
+        self.language = core.load_language(settings_file)
+        self.voice_rate, self.voice_volume, self.voice_id = core.load_voice_prefs(settings_file)
         self.tts = TTSManager(rate=self.voice_rate, volume=self.voice_volume,
                               voice_id=self.voice_id)  # Offline voice output; runs on its own thread.
-        self.voice_win = None  # the Voice Settings window while it is open
-        self.vw = {}           # its widgets, so theme and language changes can update them
-        self.voice_enabled = self.load_voice_setting()
-        self.language = self.load_language_setting()
+        self.voice_dialog = None
         self._status = ("status_ready", {})  # Remembered so the status line can be re-translated.
-        self.read_buttons = []  # "Read aloud" buttons currently on screen
-        self.stop_shown = False  # is the header Stop button visible?
-        self.bubble_font = tkfont.Font(family="Segoe UI", size=10)
-        self.char_w = max(self.bubble_font.measure("0"), 1)
-        self.bubble_items = []
-        self._resize_timer = None
-        self.canvas_width = None
-        self.is_streaming = False
-        self.current_stream_chat_id = None
-        self.current_stream_response = None
-        self.stop_event = threading.Event()
-        self.streaming_bubble_info = None
+        self._mono = None
+        self.bubbles = []
+        self._stick_to_bottom = False
+
+        self.tasks = []  # background requests that are still running
+        self.closed = False
 
         self.build_ui()
         self.root.bind("<Escape>", self._on_escape)
@@ -263,639 +325,154 @@ class JugnuApp:
             self.current_id = self.chats[-1]["id"]  # Reopen most recent saved conversation.
         else:
             self.make_draft()
-        self.apply_language()
         self.apply_theme()
-        self.root.after(250, self.warm_up)
-        self.poll_speech()
+        self.apply_language()
 
-    def load_history(self):
-        """Load valid, non-empty conversations from the history file."""
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as history_file:
-                data = json.load(history_file)
+        self.resize_timer = QTimer(self, singleShot=True, interval=60)
+        self.resize_timer.timeout.connect(self.fit_bubbles)
+        self.speech_timer = QTimer(self, interval=200)
+        self.speech_timer.timeout.connect(self.poll_speech)
+        self.speech_timer.start()
+        QTimer.singleShot(250, self, self.warm_up)
 
-            if not isinstance(data, list):
-                return []
-
-            valid_chats = []
-            seen_ids = set()
-
-            for chat in data:
-                if not isinstance(chat, dict):
-                    continue
-
-                chat_id = chat.get("id")
-                messages = chat.get("messages")
-
-                if not isinstance(chat_id, str) or not chat_id.strip():
-                    continue
-                if chat_id in seen_ids:
-                    continue
-                if not isinstance(messages, list):
-                    continue
-
-                valid_messages = []
-                for message in messages:
-                    if not isinstance(message, dict):
-                        continue
-
-                    role = message.get("role")
-                    content = message.get("content")
-
-                    if role not in ("user", "assistant"):
-                        continue
-                    if not isinstance(content, str) or not content.strip():
-                        continue
-
-                    msg_dict = {
-                        "role": role,
-                        "content": content
-                    }
-                    time_val = message.get("time")
-                    if isinstance(time_val, str) and time_val.strip():
-                        msg_dict["time"] = time_val.strip()
-                    if role == "assistant" and message.get("is_error") is True:
-                        msg_dict["is_error"] = True
-
-                    valid_messages.append(msg_dict)
-
-                # Empty conversations should never appear in saved history.
-                if not valid_messages:
-                    continue
-
-                chat["messages"] = valid_messages
-                title = chat.get("title")
-                chat["title"] = title.strip() if isinstance(title, str) and title.strip() else "New Chat"
-
-                valid_chats.append(chat)
-                seen_ids.add(chat_id)
-
-            return valid_chats
-
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return []
-
-    def save_history(self):
-        """Save non-empty conversations atomically to avoid partial JSON files."""
-        saved_chats = [
-            chat for chat in self.chats
-            if isinstance(chat, dict)
-            and isinstance(chat.get("messages"), list)
-            and any(
-                isinstance(message, dict)
-                and message.get("role") in ("user", "assistant")
-                and isinstance(message.get("content"), str)
-                and message["content"].strip()
-                for message in chat["messages"]
-            )
-        ]
-
-        history_path = os.path.abspath(HISTORY_FILE)
-        history_dir = os.path.dirname(history_path)
-        temp_path = None
-
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=history_dir,
-                suffix=".tmp",
-                delete=False
-            ) as temp_file:
-                temp_path = temp_file.name
-                json.dump(saved_chats, temp_file, ensure_ascii=False, indent=2)
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
-
-            # The temporary file is in the same directory, so replacement is atomic.
-            os.replace(temp_path, history_path)
-            temp_path = None
-
-        except (OSError, TypeError, ValueError) as error:
-            self.set_status("status_save_error", error=error)
-
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-
-    def load_settings(self):
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            if not isinstance(data, dict):
-                return True
-
-            return bool(data.get("dark_mode", True))
-
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return True
-
-    def load_voice_setting(self):
-        # Voice output is off by default; the choice is remembered between launches.
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return bool(json.load(f).get("voice_enabled", False))
-        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
-            return False
-
-    def load_voice_prefs(self):
-        # Speed, volume and voice choice. Anything missing or damaged falls back to the defaults.
-        rate, volume, voice_id = DEFAULT_RATE, DEFAULT_VOLUME, None
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            saved_rate = data.get("voice_rate")
-            saved_volume = data.get("voice_volume")
-            saved_voice = data.get("voice_id")
-            if isinstance(saved_rate, (int, float)) and not isinstance(saved_rate, bool):
-                rate = int(clamp(saved_rate, RATE_MIN, RATE_MAX))
-            if isinstance(saved_volume, (int, float)) and not isinstance(saved_volume, bool):
-                volume = float(clamp(saved_volume, 0.0, 1.0))
-            if isinstance(saved_voice, str) and saved_voice:
-                voice_id = saved_voice
-        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
-            pass
-        return rate, volume, voice_id
-
-    def load_language_setting(self):
-        # English by default; an unknown or damaged value also falls back to English.
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return normalize_language(json.load(f).get("language"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
-            return normalize_language(None)
-
-    def save_settings(self):
-        try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump({"dark_mode": self.dark_mode, "voice_enabled": self.voice_enabled,
-                           "language": self.language, "voice_rate": self.voice_rate,
-                           "voice_volume": self.voice_volume, "voice_id": self.voice_id}, f)
-        except OSError:
-            pass
-
+    # ---------- Layout ----------
     def build_ui(self):
         # Visible text is filled in by apply_language(), so it can be switched at runtime.
-        self.main = tk.Frame(self.root)
-        self.main.pack(fill="both", expand=True)
+        root = QWidget()
+        self.setCentralWidget(root)
+        main = QHBoxLayout(root)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
 
-        self.sidebar = tk.Frame(self.main, width=230)
-        self.sidebar.pack(side="left", fill="y")
-        self.sidebar.pack_propagate(False)
-
-        self.brand = tk.Label(self.sidebar, text="🤖  JUGNU", font=("Segoe UI", 22, "bold"),
-                              anchor="w", padx=18, pady=18)
-        self.brand.pack(fill="x")
-        self.tagline = tk.Label(self.sidebar, text="Just an Unusually Genius\nNeural Utility",
-                                font=("Segoe UI", 9), justify="left", anchor="w", padx=20)
-        self.tagline.pack(fill="x", pady=(0, 18))
-
-        self.new_btn = Button(self.sidebar, command=self.new_chat,
-                                 font=("Segoe UI", 10, "bold"), relief="flat", pady=12)
-        self.new_btn.pack(fill="x", padx=12, pady=(0, 18))
-
-        self.history_label = tk.Label(self.sidebar, font=("Segoe UI", 9, "bold"),
-                                      anchor="w", padx=18)
-        self.history_label.pack(fill="x")
-
-        self.history_list = tk.Listbox(self.sidebar, relief="flat", borderwidth=0,
-                                       font=("Segoe UI", 9), activestyle="none")
-        self.history_list.pack(fill="both", expand=True, padx=8, pady=8)
-        self.history_list.bind("<<ListboxSelect>>", self.select_chat)
-        self.history_list.bind("<Button-3>", self.show_chat_menu)  # right-click (Windows / Linux)
-        self.history_list.bind("<Button-2>", self.show_chat_menu)  # right-click (macOS)
-
-        self.clear_btn = Button(self.sidebar, command=self.clear_chat,
-                                   relief="flat", pady=10)
-        self.clear_btn.pack(fill="x", padx=12, pady=(4, 8))
-        self.voice_btn = Button(self.sidebar, command=self.toggle_voice,
-                                   relief="flat", pady=10)
-        self.voice_btn.pack(fill="x", padx=12, pady=(0, 8))
+        sidebar = QFrame(objectName="sidebar")
+        sidebar.setFixedWidth(230)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(12, 18, 12, 12)
+        side.setSpacing(8)
+        side.addWidget(QLabel("🤖  JUGNU", objectName="brand"))
+        side.addWidget(QLabel("Just an Unusually Genius\nNeural Utility", objectName="tagline"))
+        side.addSpacing(10)
+        self.new_btn = self.sidebar_button(side, self.new_chat)
+        side.addSpacing(10)
+        self.history_label = QLabel(objectName="historyLabel")
+        side.addWidget(self.history_label)
+        self.history_list = QListWidget(objectName="historyList")
+        self.history_list.itemClicked.connect(self.select_chat)
+        self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(self.show_chat_menu)
+        side.addWidget(self.history_list, 1)
+        self.clear_btn = self.sidebar_button(side, self.clear_chat)
+        self.clear_btn.setProperty("variant", "danger")
+        self.voice_btn = self.sidebar_button(side, self.toggle_voice)
+        self.voice_settings_btn = self.sidebar_button(side, self.open_voice_settings)
+        self.language_btn = self.sidebar_button(side, self.toggle_language)
+        self.theme_btn = self.sidebar_button(side, self.toggle_theme)
         if not self.tts.available:
-            self.voice_btn.configure(state="disabled")  # pyttsx3 not installed
-        self.voice_settings_btn = Button(self.sidebar, command=self.open_voice_settings,
-                                            relief="flat", pady=10)
-        self.voice_settings_btn.pack(fill="x", padx=12, pady=(0, 8))
-        if not self.tts.available:
-            self.voice_settings_btn.configure(state="disabled")
-        self.language_btn = Button(self.sidebar, command=self.toggle_language,
-                                      relief="flat", pady=10)
-        self.language_btn.pack(fill="x", padx=12, pady=(0, 8))
-        self.theme_btn = Button(self.sidebar, command=self.toggle_theme,
-                                   relief="flat", pady=10)
-        self.theme_btn.pack(fill="x", padx=12, pady=(0, 12))
+            self.voice_btn.setEnabled(False)  # pyttsx3 not installed
+            self.voice_settings_btn.setEnabled(False)
+        main.addWidget(sidebar)
 
-        self.content = tk.Frame(self.main)
-        self.content.pack(side="left", fill="both", expand=True)
+        content = QWidget(objectName="content")
+        column = QVBoxLayout(content)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        header = QFrame(objectName="header")
+        header.setFixedHeight(64)
+        head = QHBoxLayout(header)
+        head.setContentsMargins(22, 0, 18, 0)
+        self.header_title = QLabel(objectName="headerTitle")
+        head.addWidget(self.header_title)
+        head.addStretch(1)
+        # Shown only while speech is playing (see poll_speech).
+        self.stop_btn = QPushButton("⏹  Stop")
+        self.stop_btn.setProperty("variant", "stop")
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
+        self.stop_btn.clicked.connect(self.stop_speaking)
+        self.stop_btn.hide()
+        head.addWidget(self.stop_btn)
+        self.status = QLabel(objectName="status")
+        head.addWidget(self.status)
+        column.addWidget(header)
 
-        self.header = tk.Frame(self.content, height=64)
-        self.header.pack(fill="x")
-        self.header.pack_propagate(False)
-        self.header_title = tk.Label(self.header, font=("Segoe UI", 15, "bold"),
-                                     anchor="w", padx=22)
-        self.header_title.pack(side="left", fill="y")
-        self.status = tk.Label(self.header, font=("Segoe UI", 9, "bold"),
-                               anchor="e", padx=18)
-        self.status.pack(side="right", fill="y")
-        # Shown only while speech is playing (see poll_speech); packed after status, so it sits left of it.
-        self.stop_btn = Button(self.header, text="⏹  Stop", command=self.stop_speaking,
-                                  relief="flat", font=("Segoe UI", 9, "bold"), padx=12, pady=4)
+        self.scroll = QScrollArea(objectName="chatScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.messages = QWidget(objectName="messages")
+        self.messages_layout = QVBoxLayout(self.messages)
+        self.messages_layout.setContentsMargins(20, 16, 20, 16)
+        self.messages_layout.setSpacing(14)
+        self.messages_layout.addStretch(1)
+        self.scroll.setWidget(self.messages)
+        self.scroll.viewport().installEventFilter(self)
+        self.scroll.verticalScrollBar().rangeChanged.connect(self.on_scroll_range)
+        column.addWidget(self.scroll, 1)
 
-        self.chat_area = tk.Frame(self.content)
-        self.chat_area.pack(fill="both", expand=True, padx=12, pady=12)
-        self.canvas = tk.Canvas(self.chat_area, highlightthickness=0)
-        self.scrollbar = tk.Scrollbar(self.chat_area, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.scrollbar.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.messages_frame = tk.Frame(self.canvas)
-        self.canvas_window = self.canvas.create_window((0, 0), window=self.messages_frame, anchor="nw")
-        self.messages_frame.bind("<Configure>", self.on_frame_configure)
-        self.canvas.bind("<Configure>", self.on_canvas_configure)
-        self.canvas.bind_all("<MouseWheel>", self.on_mousewheel)
-        self.canvas.bind_all("<Button-4>", self.on_mousewheel)
-        self.canvas.bind_all("<Button-5>", self.on_mousewheel)
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(12, 0, 12, 12)
+        bottom.setSpacing(10)
+        self.input_box = InputBox()
+        self.input_box.setFixedHeight(64)
+        self.input_box.submitted.connect(self.send_message)
+        bottom.addWidget(self.input_box, 1)
+        self.send_btn = QPushButton()
+        self.send_btn.setCursor(Qt.PointingHandCursor)
+        self.send_btn.setMinimumHeight(48)
+        self.send_btn.clicked.connect(self.send_message)
+        bottom.addWidget(self.send_btn)
+        column.addLayout(bottom)
+        main.addWidget(content, 1)
 
-        self.bottom = tk.Frame(self.content)
-        self.bottom.pack(fill="x", padx=12, pady=(0, 12))
-        self.input_box = tk.Text(self.bottom, height=2, wrap="word", font=("Segoe UI", 11),
-                                 relief="flat", padx=10, pady=10, undo=True)
-        self.input_box.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self.input_box.bind("<Control-Return>", self.send_message)
-        self.input_box.bind("<Return>", self.send_message)
-        self.input_box.bind("<Shift-Return>", lambda event: None)
-        self.send_btn = Button(self.bottom, command=self.send_message,
-                                  relief="flat", font=("Segoe UI", 10, "bold"), padx=18, pady=12)
-                               relief="flat", font=("Segoe UI", 10, "bold"), padx=18, pady=12)
-        self.send_btn.pack(side="right")
-        self.stop_gen_btn = Button(self.bottom, command=self.stop_generating,
-                                   relief="flat", font=("Segoe UI", 10, "bold"), padx=16, pady=12)
+        QShortcut(QKeySequence("Ctrl+N"), self, self.new_chat)
 
-    def on_frame_configure(self, _event=None):
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    def sidebar_button(self, layout, slot):
+        button = QPushButton()
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(slot)
+        layout.addWidget(button)
+        return button
 
-    def on_canvas_configure(self, event):
-        self.canvas.itemconfigure(self.canvas_window, width=event.width)
-        if event.width == self.canvas_width:
-            return
-        self.canvas_width = event.width
-        if self._resize_timer:
-            try:
-                self.root.after_cancel(self._resize_timer)
-            except Exception:
-                pass
-        self._resize_timer = self.root.after(100, self.recalculate_bubbles)
+    def eventFilter(self, watched, event):
+        if watched is self.scroll.viewport() and event.type() == QEvent.Resize:
+            self.resize_timer.start()  # re-fit bubbles once resizing settles
+        return super().eventFilter(watched, event)
 
-    def current_canvas_width(self, fallback=580):
-        """Return the active chat canvas width in pixels, or `fallback` before layout."""
-        width = getattr(self, "canvas_width", None)
-        if not width or width < 100:
-            measured = self.canvas.winfo_width()
-            width = measured if measured >= 100 else fallback
-        return width
+    def on_scroll_range(self, _minimum, maximum):
+        if self._stick_to_bottom:
+            self.scroll.verticalScrollBar().setValue(maximum)
 
-    def max_bubble_width_px(self, canvas_w):
-        """Compute maximum bubble text width from `canvas_w`, keeping bubbles inside viewport."""
-        # Reserve space for row padding (16), bubble side offset (40), text padding (24), and gutter.
-        available_px = max(40, canvas_w - 100)
-        return min(720, available_px, max(40, int(canvas_w * 0.72)))
+    def scroll_to_bottom(self):
+        # The new size is only known after the layout runs, so keep following it for a moment.
+        self._stick_to_bottom = True
+        self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
+        QTimer.singleShot(300, self, self.stop_sticking)
 
-    def compute_bubble_cols(self, text, canvas_w):
-        """Compute tk.Text column width for `text` that wraps cleanly within `canvas_w`."""
-        max_bubble_px = self.max_bubble_width_px(canvas_w)
-        max_cols = max(1, max_bubble_px // self.char_w)
-        min_cols = min(18, max_cols)
-        lines = text.splitlines() or [""]
-        max_line_px = max(self.bubble_font.measure(line.expandtabs(8)) for line in lines)
-        needed_cols = max(1, math.ceil(max_line_px / self.char_w))
-        return max(min_cols, min(max_cols, needed_cols))
+    def stop_sticking(self):
+        self._stick_to_bottom = False
 
-    @staticmethod
-    def fit_bubble_height(txt, text):
-        """Return exact display-line height for a wrapped tk.Text bubble."""
-        dlines = txt.count("1.0", "end", "displaylines")
-        count = dlines[0] if isinstance(dlines, (tuple, list)) else (dlines or 0)
-        if count and text.endswith("\n"):
-            count -= 1
-        count = max(1, count or 1)
-        # Markdown headings, code blocks and Copy buttons are taller than a normal line,
-        # so a count of lines is not enough: also ask Tk for the real height in pixels.
-        try:
-            pixels = txt.count("1.0", "end", "ypixels")
-            pixels = pixels[0] if isinstance(pixels, (tuple, list)) else (pixels or 0)
-            line = tkfont.nametofont(txt.cget("font"), root=txt).metrics("linespace")
-            lines_by_pixels = math.ceil(pixels / line) if line else 0
-            if text.endswith("\n"):
-                lines_by_pixels -= 1
-            count = max(count, lines_by_pixels)
-        except (tk.TclError, TypeError, ValueError):
-            pass
-        return count
+    # ---------- Theme and language ----------
+    def bubble_font(self):
+        font = self.font()
+        font.setPointSize(BUBBLE_PT)
+        return font
 
-    def bubble_cols(self, txt, measure_text, canvas_w):
-        """Column width for a bubble: compute_bubble_cols plus room for indented Markdown lines."""
-        cols = self.compute_bubble_cols(measure_text, canvas_w)
-        try:
-            indented = any(txt.tag_ranges(name) for name in INDENT_TAGS)
-        except tk.TclError:
-            indented = False
-        if indented:
-            max_cols = max(1, self.max_bubble_width_px(canvas_w) // self.char_w)
-            cols = min(max_cols, cols + 3)
-        return cols
+    def mono_family(self):
+        if self._mono is None:
+            self._mono = QFontDatabase.systemFont(QFontDatabase.FixedFont).family()
+        return self._mono
 
-    def recalculate_bubbles(self):
-        self._resize_timer = None
-        canvas_w = self.current_canvas_width(fallback=0)
-        if canvas_w < 100 or not self.bubble_items:
-            return
-
-        # Phase 1: Update widths so Tk wraps lines to the new dimension
-        for _bubble, txt, orig_text in self.bubble_items:
-            try:
-                cols = self.bubble_cols(txt, orig_text, canvas_w)
-                txt.configure(state="normal", width=cols)
-            except tk.TclError:
-                pass
-
-        # Update geometry so displaylines accurately reflects the new width
-        self.root.update_idletasks()
-
-        # Phase 2: Set exact height matching display line count
-        for _bubble, txt, orig_text in self.bubble_items:
-            try:
-                h = self.fit_bubble_height(txt, orig_text)
-                txt.configure(height=h, state="disabled")
-            except tk.TclError:
-                pass
-
-        self.root.update_idletasks()
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-    def on_mousewheel(self, event):
-        try:
-            target = self.canvas
-            if event.widget == self.history_list:
-                target = self.history_list
-            elif event.widget == self.input_box:
-                target = self.input_box
-
-            if event.num == 4:
-                target.yview_scroll(-1, "units")
-            elif event.num == 5:
-                target.yview_scroll(1, "units")
-            elif event.delta:
-                delta = event.delta
-                if abs(delta) >= 120:
-                    target.yview_scroll(int(-1 * (delta / 120)), "units")
-                else:
-                    target.yview_scroll(int(-1 * delta), "units")
-            return "break"
-        except tk.TclError:
-            pass
+    @property
+    def colors(self):
+        return core.DARK if self.dark_mode else core.LIGHT
 
     def apply_theme(self):
-        c = self.colors
-        widgets = [
-            (self.root, c["bg"]), (self.main, c["bg"]), (self.sidebar, c["sidebar"]),
-            (self.content, c["bg"]), (self.header, c["accent"]), (self.chat_area, c["bg"]),
-            (self.canvas, c["bg"]), (self.messages_frame, c["bg"]), (self.bottom, c["bg"])
-        ]
-        for widget, color in widgets:
-            widget.configure(bg=color)
-        for widget in [self.brand, self.tagline, self.history_label]:
-            widget.configure(bg=c["sidebar"], fg=c["text"])
-        self.brand.configure(fg=c["accent"])
-        self.tagline.configure(fg=c["muted"])
-        self.history_label.configure(fg=c["muted"])
-        self.header_title.configure(bg=c["accent"], fg="white")
-        self.status.configure(bg=c["accent"], fg="#D1FAE5")
-        self.stop_btn.configure(bg=c["accent2"], fg="white", activebackground=c["danger"],
-                                activeforeground=c["accent2"], cursor="hand2")
-        self.history_list.configure(bg=c["sidebar"], fg=c["text"],
-                                    selectbackground=c["accent"], selectforeground="white")
-        for btn in [self.new_btn, self.theme_btn, self.voice_btn, self.language_btn,
-                    self.voice_settings_btn]:
-            btn.configure(bg=c["accent"], fg="white", activebackground=c["accent2"],
-                          activeforeground="white", cursor="hand2")
-        self.voice_btn.configure(text=self.voice_button_text())
-        self.clear_btn.configure(bg=c["danger"], fg=c["accent2"], activebackground=c["danger"],
-                                 activeforeground=c["text"], cursor="hand2")
-        self.input_box.configure(bg=c["entry"], fg=c["text"], insertbackground=c["text"])
-        self.send_btn.configure(bg=c["accent"], fg="white", activebackground=c["accent2"],
-                                activeforeground="white", cursor="hand2")
-        if hasattr(self, "stop_gen_btn"):
-            self.stop_gen_btn.configure(bg=c["danger"], fg=c["accent2"], activebackground=c["danger"],
-                                        activeforeground=c["text"], cursor="hand2")
-        self.theme_btn.configure(text=self.theme_button_text())
-        self.update_voice_window()
-        self.refresh_history_list()
-        self.display_chat()
+        QApplication.instance().setStyleSheet(load_stylesheet(self.dark_mode))
+        self.theme_btn.setText(self.theme_button_text())
+        self.display_chat()  # reply bubbles carry theme colours in their rich text
 
     def toggle_theme(self):
         self.dark_mode = not self.dark_mode
-        self.colors = DARK if self.dark_mode else LIGHT
         self.save_settings()
         self.apply_theme()
-
-    def toggle_voice(self):
-        self.voice_enabled = not self.voice_enabled
-        if not self.voice_enabled:
-            self.tts.stop()  # Muting silences the current reply immediately.
-        self.voice_btn.configure(text=self.voice_button_text())
-        self.save_settings()
-
-    def stop_speaking(self):
-        self.tts.stop()
-        self.poll_speech(reschedule=False)  # hide the Stop button right away
-
-    def read_aloud(self, text):
-        # Reads exactly this message. Works even when the sidebar Voice toggle is off,
-        # because the user asked for it explicitly. Replaces anything already being read.
-        if not self.tts.available:
-            return
-        self.tts.stop()
-        self.tts.speak(plain_text(text))  # without ** # ` and other Markdown symbols
-        self.poll_speech(reschedule=False)
-
-    def poll_speech(self, reschedule=True):
-        # Keep the Stop button and the Read aloud buttons in step with the speech engine.
-        speaking = self.tts.speaking
-        if speaking and not self.stop_shown:
-            self.stop_btn.pack(side="right", padx=(0, 4))
-            self.stop_shown = True
-        elif not speaking and self.stop_shown:
-            self.stop_btn.pack_forget()
-            self.stop_shown = False
-        state = "normal" if self.tts.available else "disabled"
-        self.voice_settings_btn.configure(state=state)
-        for btn in self.read_buttons:
-            try:
-                btn.configure(state=state)
-            except tk.TclError:
-                pass  # its bubble was already redrawn
-        if reschedule:
-            self.root.after(200, self.poll_speech)
-
-    # ---------- Voice Settings window ----------
-    def voice_labels(self):
-        """Dropdown labels: the default entry first, then every installed voice (names made unique)."""
-        labels, ids, seen = [self.t("voice_default_name")], [None], {}
-        for vid, name in self.tts.voices:
-            seen[name] = seen.get(name, 0) + 1
-            labels.append(name if seen[name] == 1 else f"{name} ({seen[name]})")
-            ids.append(vid)
-        return labels, ids
-
-    def open_voice_settings(self):
-        if not self.tts.available:
-            return
-        if self.voice_win is not None:
-            self.voice_win.lift()
-            self.voice_win.focus_set()
-            return
-        win = tk.Toplevel(self.root)
-        win.resizable(False, False)
-        win.transient(self.root)
-        win.protocol("WM_DELETE_WINDOW", self.close_voice_settings)
-        self.voice_win = win
-        labels, ids = self.voice_labels()
-        # A saved voice that is no longer installed shows (and plays) as the default.
-        index = ids.index(self.voice_id) if self.voice_id in ids else 0
-        self.voice_choice = tk.StringVar(value=labels[index])
-        w = self.vw = {"win": win}
-        w["rate_label"] = tk.Label(win, font=("Segoe UI", 10, "bold"), anchor="w")
-        w["rate"] = tk.Scale(win, from_=RATE_MIN, to=RATE_MAX, resolution=5, orient="horizontal",
-                             showvalue=False, length=300, highlightthickness=0, bd=0)
-        w["volume_label"] = tk.Label(win, font=("Segoe UI", 10, "bold"), anchor="w")
-        w["volume"] = tk.Scale(win, from_=0, to=100, resolution=5, orient="horizontal",
-                               showvalue=False, length=300, highlightthickness=0, bd=0)
-        w["voice_label"] = tk.Label(win, font=("Segoe UI", 10, "bold"), anchor="w")
-        w["voice"] = tk.OptionMenu(win, self.voice_choice, *labels, command=self.on_voice_pick)
-        w["test"] = Button(win, command=self.test_voice, relief="flat",
-                              font=("Segoe UI", 10, "bold"), pady=8)
-        w["close"] = Button(win, command=self.close_voice_settings, relief="flat", pady=8)
-        # Set the starting positions first, then attach the callbacks, so opening the
-        # window never rewrites the saved values.
-        w["rate"].set(self.voice_rate)
-        w["volume"].set(round(self.voice_volume * 100))
-        w["rate"].configure(command=self.on_rate_change)
-        w["volume"].configure(command=self.on_volume_change)
-        for slider in (w["rate"], w["volume"]):
-            slider.bind("<ButtonRelease-1>", lambda _e: self.save_settings())
-            slider.bind("<KeyRelease>", lambda _e: self.save_settings())
-        for key in ("rate_label", "rate", "volume_label", "volume", "voice_label", "voice"):
-            w[key].pack(fill="x", padx=20, pady=(14, 0) if key.endswith("label") else (2, 0))
-        w["test"].pack(fill="x", padx=20, pady=(18, 6))
-        w["close"].pack(fill="x", padx=20, pady=(0, 18))
-        self.update_voice_window()
-
-    def update_voice_window(self):
-        # Re-apply text (language) and colours (theme) to the window if it is open.
-        if self.voice_win is None:
-            return
-        w, c = self.vw, self.colors
-        w["win"].title(self.t("voice_settings_title"))
-        w["win"].configure(bg=c["bg"])
-        self.update_voice_value_labels()
-        w["voice_label"].configure(text=self.t("voice_choice_label"))
-        w["test"].configure(text=self.t("voice_test_btn"))
-        w["close"].configure(text=self.t("voice_close_btn"))
-        for key in ("rate_label", "volume_label", "voice_label"):
-            w[key].configure(bg=c["bg"], fg=c["text"])
-        for key in ("rate", "volume"):
-            w[key].configure(bg=c["bg"], fg=c["text"], troughcolor=c["border"],
-                             activebackground=c["accent2"])
-        w["voice"].configure(bg=c["panel"], fg=c["text"], activebackground=c["accent"],
-                             activeforeground="white", highlightthickness=0, relief="flat")
-        w["voice"]["menu"].configure(bg=c["panel"], fg=c["text"], activebackground=c["accent"],
-                                     activeforeground="white")
-        w["test"].configure(bg=c["accent"], fg="white", activebackground=c["accent2"],
-                            activeforeground="white", cursor="hand2")
-        w["close"].configure(bg=c["danger"], fg=c["accent2"], activebackground=c["danger"],
-                             activeforeground=c["text"], cursor="hand2")
-        # The default entry's label depends on the language, so rebuild the dropdown list.
-        labels, ids = self.voice_labels()
-        menu = w["voice"]["menu"]
-        menu.delete(0, "end")
-        for label in labels:
-            menu.add_command(label=label, command=lambda lb=label: self.on_voice_pick(lb))
-        index = ids.index(self.voice_id) if self.voice_id in ids else 0
-        self.voice_choice.set(labels[index])
-
-    def update_voice_value_labels(self):
-        w = self.vw
-        w["rate_label"].configure(text=self.t("voice_rate_label", value=self.voice_rate))
-        w["volume_label"].configure(
-            text=self.t("voice_volume_label", value=round(self.voice_volume * 100)))
-
-    def push_voice_settings(self):
-        # Hand the current values to the speech thread. Cheap, so it is safe on every slider tick.
-        self.tts.apply_settings(self.voice_rate, self.voice_volume, self.voice_id)
-
-    def on_rate_change(self, value):
-        self.voice_rate = int(float(value))
-        self.push_voice_settings()
-        self.update_voice_value_labels()
-
-    def on_volume_change(self, value):
-        self.voice_volume = int(float(value)) / 100
-        self.push_voice_settings()
-        self.update_voice_value_labels()
-
-    def on_voice_pick(self, label):
-        labels, ids = self.voice_labels()
-        if label in labels:
-            self.voice_id = ids[labels.index(label)]
-            self.voice_choice.set(label)
-            self.push_voice_settings()
-            self.save_settings()
-
-    def test_voice(self):
-        # Plays a short sample with the current settings, even if the Voice toggle is off.
-        if not self.tts.available:
-            return
-        self.tts.stop()
-        self.tts.speak(self.t("voice_test_sample"))
-        self.poll_speech(reschedule=False)
-
-    def close_voice_settings(self):
-        self.save_settings()
-        if self.voice_win is not None:
-            self.voice_win.destroy()
-        self.voice_win = None
-        self.vw = {}
-
-    def on_close(self):
-        if getattr(self, "is_streaming", False):
-            self.stop_generating()
-        if self._resize_timer:
-            try:
-                self.root.after_cancel(self._resize_timer)
-            except Exception:
-                pass
-        self.tts.shutdown()
-        self.root.destroy()
-
-    def _on_escape(self, _event=None):
-        if getattr(self, "is_streaming", False):
-            self.stop_generating()
-
-    def stop_generating(self):
-        """Abort an in-progress Ollama stream generation."""
-        if not getattr(self, "is_streaming", False):
-            return
-        if hasattr(self, "stop_event") and self.stop_event is not None:
-            self.stop_event.set()
-        if getattr(self, "current_stream_response", None) is not None:
-            try:
-                self.current_stream_response.close()
-            except Exception:
-                pass
 
     def t(self, key, **kwargs):
         """Look up a user-facing string in the currently selected language."""
@@ -911,42 +488,115 @@ class JugnuApp:
         self.language = next_language(self.language)
         self.save_settings()
         self.apply_language()
-        self.display_chat()  # Redraw so the welcome screen and "You" labels switch too.
 
     def apply_language(self):
         # Set every piece of visible text from the strings dictionary.
-        self.new_btn.configure(text=self.t("new_chat_btn"))
-        self.history_label.configure(text=self.t("history_label"))
-        self.clear_btn.configure(text=self.t("clear_chat_btn"))
-        self.voice_btn.configure(text=self.voice_button_text())
-        self.voice_settings_btn.configure(text=self.t("voice_settings_btn"))
-        self.update_voice_window()
-        self.language_btn.configure(text=self.t("language_btn", name=self.t("language_name")))
-        self.theme_btn.configure(text=self.theme_button_text())
-        self.header_title.configure(text=self.t("header_title"))
-        self.send_btn.configure(text=self.t("send_btn"))
-        if hasattr(self, "stop_gen_btn"):
-            self.stop_gen_btn.configure(text=self.t("stop_btn"))
+        self.new_btn.setText(self.t("new_chat_btn"))
+        self.history_label.setText(self.t("history_label"))
+        self.clear_btn.setText(self.t("clear_chat_btn"))
+        self.voice_btn.setText(self.voice_button_text())
+        self.voice_settings_btn.setText(self.t("voice_settings_btn"))
+        self.language_btn.setText(self.t("language_btn", name=self.t("language_name")))
+        self.theme_btn.setText(self.theme_button_text())
+        self.header_title.setText(self.t("header_title"))
+        self.send_btn.setText(self.t("send_btn"))
+        if self.voice_dialog is not None:
+            self.voice_dialog.retranslate()
         key, kwargs = self._status
         self.set_status(key, **kwargs)
+        self.display_chat()  # Redraw so the welcome screen and "You" labels switch too.
+
+    def set_status(self, key, **kwargs):
+        # Store the key (not the text) so a language switch can re-translate the status line.
+        self._status = (key, kwargs)
+        self.status.setText("• " + self.t(key, **kwargs))
+
+    def save_settings(self):
+        core.save_settings(self.settings_file, dark_mode=self.dark_mode,
+                           voice_enabled=self.voice_enabled, language=self.language,
+                           voice_rate=self.voice_rate, voice_volume=self.voice_volume,
+                           voice_id=self.voice_id)
+
+    def save_history(self):
+        try:
+            core.save_history(self.chats, self.history_file)
+        except (OSError, TypeError, ValueError) as error:
+            self.set_status("status_save_error", error=error)
+
+    # ---------- Voice ----------
+    def toggle_voice(self):
+        self.voice_enabled = not self.voice_enabled
+        if not self.voice_enabled:
+            self.tts.stop()  # Muting silences the current reply immediately.
+        self.voice_btn.setText(self.voice_button_text())
+        self.save_settings()
+
+    def stop_speaking(self):
+        self.tts.stop()
+        self.poll_speech()  # hide the Stop button right away
+
+    def read_aloud(self, text):
+        # Reads exactly this message. Works even when the sidebar Voice toggle is off,
+        # because the user asked for it explicitly. Replaces anything already being read.
+        if not self.tts.available:
+            return
+        self.tts.stop()
+        self.tts.speak(plain_text(text))  # without ** # ` and other Markdown symbols
+        self.poll_speech()
+
+    def test_voice(self):
+        # Plays a short sample with the current settings, even if the Voice toggle is off.
+        if not self.tts.available:
+            return
+        self.tts.stop()
+        self.tts.speak(self.t("voice_test_sample"))
+        self.poll_speech()
+
+    def poll_speech(self):
+        # Keep the Stop button and the Read aloud buttons in step with the speech engine.
+        self.stop_btn.setVisible(bool(self.tts.speaking))
+        available = bool(self.tts.available)
+        self.voice_settings_btn.setEnabled(available)
+        for bubble in self.bubbles:
+            if bubble.read_btn is not None:
+                bubble.read_btn.setEnabled(available)
+
+    def push_voice_settings(self):
+        # Hand the current values to the speech thread. Cheap, so it is safe on every slider tick.
+        self.tts.apply_settings(self.voice_rate, self.voice_volume, self.voice_id)
+
+    def open_voice_settings(self):
+        if not self.tts.available:
+            return
+        if self.voice_dialog is None:
+            self.voice_dialog = VoiceSettingsDialog(self)
+        self.voice_dialog.show()
+        self.voice_dialog.raise_()
+        self.voice_dialog.activateWindow()
+
+    # ---------- Chats ----------
+    def make_draft(self):
+        self.draft_chat = core.new_chat()
+        self.current_id = self.draft_chat["id"]
+
+    def current_chat(self):
+        if self.draft_chat and self.draft_chat.get("id") == self.current_id:
+            return self.draft_chat
+        return self.find_chat(self.current_id)
+
+    def find_chat(self, chat_id):
+        return next((c for c in self.chats if c.get("id") == chat_id), None)
 
     def refresh_history_list(self):
-        selected = self.current_id
-        self.history_list.delete(0, "end")
-        for chat in reversed(self.chats):
-            title = chat.get("title", "New Chat")
-            if len(title) > MAX_LIST_TITLE:
-                title = title[:MAX_LIST_TITLE - 1] + "…"
-            self.history_list.insert("end", "  ◌  " + title)
-        if selected:
-            for idx, chat in enumerate(reversed(self.chats)):
-                if chat.get("id") == selected:
-                    self.history_list.selection_set(idx)
-                    break
-
-    def make_draft(self):
-        self.draft_chat = {"id": str(uuid.uuid4()), "title": "New Chat", "messages": []}
-        self.current_id = self.draft_chat["id"]
+        self.history_list.clear()
+        for chat in reversed(self.chats):  # newest first
+            item = QListWidgetItem(core.list_title(chat.get("title", core.NEW_CHAT_TITLE)))
+            item.setData(Qt.UserRole, chat["id"])
+            item.setToolTip(chat.get("title", ""))
+            self.history_list.addItem(item)
+            if chat["id"] == self.current_id:
+                item.setSelected(True)
+                self.history_list.setCurrentItem(item)
 
     def new_chat(self):
         # A blank chat is temporary. It must not create a history entry until a message is sent.
@@ -954,59 +604,40 @@ class JugnuApp:
         self.make_draft()
         self.refresh_history_list()
         self.display_chat()
-        self.input_box.focus_set()
+        self.input_box.setFocus()
 
-    def current_chat(self):
-        if self.draft_chat and self.draft_chat.get("id") == self.current_id:
-            return self.draft_chat
-        for chat in self.chats:
-            if chat.get("id") == self.current_id:
-                return chat
-        return None
-
-    def select_chat(self, _event=None):
-        selection = self.history_list.curselection()
-        if not selection:
-            return
-        index = len(self.chats) - 1 - selection[0]
-        if 0 <= index < len(self.chats):
+    def select_chat(self, item):
+        chat_id = item.data(Qt.UserRole)
+        if self.find_chat(chat_id) is not None and chat_id != self.current_id:
             self.tts.stop()
-            self.current_id = self.chats[index]["id"]
+            self.current_id = chat_id
             self.draft_chat = None
             self.display_chat()
 
-    # ---------- Rename / Delete a single chat (right-click on the history list) ----------
-    def find_chat(self, chat_id):
-        return next((c for c in self.chats if c.get("id") == chat_id), None)
-
-    def chat_at_event(self, event):
-        """The saved chat under the mouse, or None when the click missed every row."""
-        if not self.chats:
+    def show_chat_menu(self, pos):
+        item = self.history_list.itemAt(pos)
+        if item is None:
             return None
-        row = self.history_list.nearest(event.y)
-        box = self.history_list.bbox(row)
-        # nearest() also answers for empty space below the last row, so check the click really hit it.
-        if not box or not (box[1] <= event.y <= box[1] + box[3]):
-            return None
-        position = len(self.chats) - 1 - row  # the list shows newest first
-        return self.chats[position] if 0 <= position < len(self.chats) else None
+        chat_id = item.data(Qt.UserRole)  # the menu acts on the chat that was clicked, not on its row
+        menu = QMenu(self)
+        menu.setAttribute(Qt.WA_DeleteOnClose)
+        menu.addAction(self.t("chat_menu_rename"), lambda: self.rename_chat(chat_id))
+        menu.addAction(self.t("chat_menu_delete"), lambda: self.delete_chat(chat_id))
+        menu.popup(self.history_list.viewport().mapToGlobal(pos))
+        return menu
 
-    def show_chat_menu(self, event):
-        chat = self.chat_at_event(event)
-        if chat is None:
-            return
-        c = self.colors
-        menu = tk.Menu(self.root, tearoff=0, bg=c["panel"], fg=c["text"],
-                       activebackground=c["accent"], activeforeground="white")
-        # The menu remembers the chat's id (not its row), so it acts on the chat that was clicked.
-        menu.add_command(label=self.t("chat_menu_rename"),
-                         command=lambda cid=chat["id"]: self.rename_chat(cid))
-        menu.add_command(label=self.t("chat_menu_delete"),
-                         command=lambda cid=chat["id"]: self.delete_chat(cid))
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+    def ask_chat_title(self, initial):
+        """Returns the text entered, or None if it was cancelled."""
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle(self.t("rename_dialog_title"))
+        dialog.setLabelText(self.t("rename_dialog_prompt"))
+        dialog.setTextValue(initial)
+        dialog.setOkButtonText(self.t("rename_save_btn"))
+        dialog.setCancelButtonText(self.t("rename_cancel_btn"))
+        return dialog.textValue() if dialog.exec() == QDialog.Accepted else None
+
+    def confirm(self, title, message):
+        return QMessageBox.question(self, title, message) == QMessageBox.Yes
 
     def rename_chat(self, chat_id):
         chat = self.find_chat(chat_id)
@@ -1015,7 +646,7 @@ class JugnuApp:
         new_title = self.ask_chat_title(chat.get("title", ""))
         if new_title is None:
             return  # cancelled
-        new_title = " ".join(new_title.split())[:MAX_TITLE_LENGTH]  # tidy spaces, cap the length
+        new_title = core.tidy_title(new_title)
         if not new_title or new_title == chat.get("title"):
             return  # an empty name is ignored: the old title stays
         chat["title"] = new_title
@@ -1026,8 +657,8 @@ class JugnuApp:
         chat = self.find_chat(chat_id)
         if chat is None:
             return
-        if not messagebox.askyesno(self.t("delete_chat_title"),
-                                   self.t("delete_chat_message", title=chat.get("title", ""))):
+        if not self.confirm(self.t("delete_chat_title"),
+                            self.t("delete_chat_message", title=chat.get("title", ""))):
             return
         if getattr(self, "is_streaming", False) and getattr(self, "current_stream_chat_id", None) == chat_id:
             self.stop_generating()
@@ -1035,475 +666,116 @@ class JugnuApp:
         self.chats = [saved for saved in self.chats if saved.get("id") != chat_id]  # only this chat goes
         if was_open:
             self.tts.stop()
-            self.draft_chat = None
             self.make_draft()  # deleting the open chat leaves a fresh empty one
         self.save_history()
         self.refresh_history_list()
         if was_open:
             self.display_chat()
 
-    def ask_chat_title(self, initial):
-        """Small themed dialog. Returns the text entered, or None if it was cancelled."""
-        c = self.colors
-        win = tk.Toplevel(self.root)
-        win.title(self.t("rename_dialog_title"))
-        win.configure(bg=c["bg"])
-        win.resizable(False, False)
-        win.transient(self.root)
-        result = {"value": None}
-
-        tk.Label(win, text=self.t("rename_dialog_prompt"), bg=c["bg"], fg=c["text"],
-                 font=("Segoe UI", 10, "bold"), anchor="w").pack(fill="x", padx=20, pady=(16, 4))
-        entry = tk.Entry(win, width=40, font=("Segoe UI", 11), relief="flat", bg=c["entry"],
-                         fg=c["text"], insertbackground=c["text"])
-        entry.insert(0, initial)
-        entry.pack(fill="x", padx=20, pady=(0, 12), ipady=6)
-
-        def accept(_event=None):
-            result["value"] = entry.get()
-            win.destroy()
-
-        def cancel(_event=None):
-            win.destroy()
-
-        buttons = tk.Frame(win, bg=c["bg"])
-        buttons.pack(fill="x", padx=20, pady=(0, 16))
-        Button(buttons, text=self.t("rename_save_btn"), command=accept, relief="flat",
-                  bg=c["accent"], fg="white", activebackground=c["accent2"],
-                  activeforeground="white", cursor="hand2", padx=16, pady=6).pack(side="right")
-        Button(buttons, text=self.t("rename_cancel_btn"), command=cancel, relief="flat",
-                  bg=c["danger"], fg=c["accent2"], activebackground=c["danger"],
-                  activeforeground=c["text"], cursor="hand2", padx=16, pady=6).pack(side="right", padx=(0, 8))
-        entry.bind("<Return>", accept)
-        win.bind("<Escape>", cancel)
-        win.protocol("WM_DELETE_WINDOW", cancel)
-
-        # Open next to the main window and keep focus here until it is closed.
-        win.update_idletasks()
-        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
-        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_reqheight()) // 3
-        win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
-        try:
-            win.wait_visibility()
-            win.grab_set()
-        except tk.TclError:
-            pass
-        entry.focus_set()
-        entry.select_range(0, "end")
-        entry.icursor("end")
-        self.root.wait_window(win)
-        return result["value"]
-
     def clear_chat(self):
         chat = self.current_chat()
         if not chat or not chat.get("messages"):
-            # Nothing saved to clear; leave the empty draft alone.
-            return
-        if not messagebox.askyesno(self.t("clear_dialog_title"), self.t("clear_dialog_message")):
+            return  # Nothing saved to clear; leave the empty draft alone.
+        if not self.confirm(self.t("clear_dialog_title"), self.t("clear_dialog_message")):
             return
         if getattr(self, "is_streaming", False) and getattr(self, "current_stream_chat_id", None) == chat.get("id"):
             self.stop_generating()
         self.tts.stop()
         self.chats = [saved for saved in self.chats if saved.get("id") != chat.get("id")]
-        self.draft_chat = None
         self.make_draft()
         self.save_history()
         self.refresh_history_list()
         self.display_chat()
 
+    # ---------- Messages ----------
+    def clear_messages(self):
+        self.bubbles = []
+        while self.messages_layout.count() > 1:  # keep the stretch at the end
+            widget = self.messages_layout.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+
     def display_chat(self):
-        self.read_buttons = []
-        self.bubble_items.clear()
-        for child in self.messages_frame.winfo_children():
-            child.destroy()
+        self.clear_messages()
+        self.refresh_history_list()
         chat = self.current_chat()
         messages = chat.get("messages", []) if chat else []
         if not messages:
             self.show_welcome()
-        else:
-            for msg in messages:
-                self.add_bubble(msg.get("role"), msg.get("content", ""), timestamp=msg.get("time"))
-        self.root.after(50, lambda: self.canvas.yview_moveto(1.0))
+        for msg in messages:
+            self.add_bubble(msg.get("role"), msg.get("content", ""), timestamp=msg.get("time"))
+        self.scroll_to_bottom()
 
     def show_welcome(self):
         # Welcome splash shown on launch and for each empty New Chat.
-        c = self.colors
-        wrapper = tk.Frame(self.messages_frame, bg=c["bg"])
-        wrapper.pack(fill="both", expand=True, pady=24)
-
-        image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jugnu_bot.png")
-        try:
-            self.welcome_photo = tk.PhotoImage(file=image_path)
-            # Keep it compact in the chat viewport.
-            factor = max(1, int(max(self.welcome_photo.width() / 360,
-                                    self.welcome_photo.height() / 260)))
-            if factor > 1:
-                self.welcome_photo = self.welcome_photo.subsample(factor, factor)
-            tk.Label(wrapper, image=self.welcome_photo, bg=c["bg"]).pack(pady=(0, 10))
-        except (tk.TclError, OSError):
+        welcome = QWidget()
+        layout = QVBoxLayout(welcome)
+        layout.setContentsMargins(0, 24, 0, 0)
+        layout.setSpacing(6)
+        pixmap = QPixmap(os.path.join(HERE, "jugnu_bot.png"))
+        if pixmap.isNull():
             # Friendly fallback if the companion image hasn't been copied beside the script.
-            tk.Label(wrapper, text="🤖", font=("Segoe UI Emoji", 76),
-                     bg=c["bg"], fg=c["accent"]).pack(pady=(10, 18))
-
-        tk.Label(wrapper, text=self.t("welcome_title"),
-                 font=("Segoe UI", 23, "bold"), bg=c["bg"], fg=c["text"]).pack(pady=(4, 5))
-        tk.Label(wrapper, text="Just an Unusually Genius Neural Utility",
-                 font=("Segoe UI", 12), bg=c["bg"], fg=c["muted"]).pack(pady=(0, 10))
-        tk.Label(wrapper, text=self.t("welcome_prompt"),
-                 font=("Segoe UI", 12), bg=c["bg"], fg=c["accent"]).pack()
-
-    def copy_to_clipboard(self, text, button):
-        try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(text)
-            self.root.update()
-            success_fg = "#10B981" if self.dark_mode else "#059669"
-            button.configure(text="✓ Copied!", fg=success_fg)
-            def revert():
-                try:
-                    button.configure(text="⧉ Copy", fg=self.colors["muted"], bg=button.master["bg"])
-                except tk.TclError:
-                    pass
-            self.root.after(1500, revert)
-        except Exception:
-            pass
-
-    # ---------- Markdown in assistant bubbles ----------
-    def markdown_fonts(self):
-        """Fonts for the Markdown styles. Built once and kept, because Tk drops unreferenced fonts."""
-        fonts = getattr(self, "_markdown_fonts", None)
-        if fonts is None:
-            family, size = self.bubble_font.cget("family"), self.bubble_font.cget("size")
-            installed = set(tkfont.families(self.root))
-            mono = next((name for name in ("Consolas", "Cascadia Mono", "Menlo", "DejaVu Sans Mono",
-                                           "Courier New") if name in installed),
-                        tkfont.nametofont("TkFixedFont", root=self.root).actual("family"))
-
-            def make(**options):
-                return tkfont.Font(root=self.root, **options)
-
-            fonts = self._markdown_fonts = {
-                "bold": make(family=family, size=size, weight="bold"),
-                "italic": make(family=family, size=size, slant="italic"),
-                "bolditalic": make(family=family, size=size, weight="bold", slant="italic"),
-                "h1": make(family=family, size=size + 4, weight="bold"),
-                "h2": make(family=family, size=size + 2, weight="bold"),
-                "h3": make(family=family, size=size + 1, weight="bold"),
-                "mono": make(family=mono, size=size),
-                "codehead": make(family=family, size=size - 1, weight="bold"),
-            }
-        return fonts
-
-    def configure_markdown_tags(self, txt):
-        """Give a bubble's tk.Text the look of each Markdown style, in the current theme."""
-        c, f = self.colors, self.markdown_fonts()
-        # Tags created later win over earlier ones, so inline code and code blocks come last.
-        txt.tag_configure("bold", font=f["bold"])
-        txt.tag_configure("italic", font=f["italic"])
-        txt.tag_configure("bolditalic", font=f["bolditalic"])
-        txt.tag_configure("strike", overstrike=True)
-        txt.tag_configure("h1", font=f["h1"], foreground=c["accent"], spacing1=4, spacing3=2)
-        txt.tag_configure("h2", font=f["h2"], foreground=c["accent"], spacing1=4, spacing3=2)
-        txt.tag_configure("h3", font=f["h3"], foreground=c["accent"], spacing1=2, spacing3=1)
-        txt.tag_configure("quote", foreground=c["muted"], lmargin1=4, lmargin2=16)
-        for level in range(5):
-            indent = 4 + level * 18
-            txt.tag_configure("li%d" % level, lmargin1=indent, lmargin2=indent + 14)
-        txt.tag_configure("rule", foreground=c["border"])
-        txt.tag_configure("link", foreground=c["accent"], underline=True)
-        txt.tag_configure("linkurl", foreground=c["muted"])
-        txt.tag_configure("icode", font=f["mono"], background=c["inline_code"])
-        txt.tag_configure("codehead", background=c["code"], foreground=c["muted"], font=f["codehead"],
-                          lmargin1=10, lmargin2=10, spacing1=2)
-        txt.tag_configure("code", background=c["code"], foreground=c["text"], font=f["mono"],
-                          lmargin1=10, lmargin2=10, rmargin=10, wrap="char")
-
-    def make_code_copy_button(self, txt, code):
-        """The Copy button shown at the top of a code block; it copies exactly that code."""
-        c = self.colors
-        button = tk.Button(txt, text=self.t("code_copy_btn"), font=("Segoe UI", 8, "bold"),
-                           relief="flat", bd=0, highlightthickness=0, bg=c["code"], fg=c["muted"],
-                           activebackground=c["border"], activeforeground=c["accent"],
-                           cursor="hand2", padx=6, pady=1)
-        button.configure(command=lambda: self.copy_code(code, button))
-        button.bind("<Enter>", lambda _e: button.configure(fg=c["accent"]))
-        button.bind("<Leave>", lambda _e: button.configure(fg=c["muted"]))
-        return button
-
-    def copy_code(self, code, button):
-        try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(code)
-            self.root.update()
-            button.configure(text=self.t("code_copied_btn"),
-                             fg="#10B981" if self.dark_mode else "#059669")
-
-            def revert():
-                try:
-                    button.configure(text=self.t("code_copy_btn"), fg=self.colors["muted"])
-                except tk.TclError:
-                    pass  # the bubble was redrawn meanwhile
-            self.root.after(1500, revert)
-        except tk.TclError:
-            pass
-
-    @staticmethod
-    def measure_text(segments):
-        """Text used to size the bubble. Code is monospace, so each code character counts as one column."""
-        parts = []
-        for seg in segments:
-            if seg.copy is not None:
-                continue
-            if "code" in seg.tags:
-                parts.append("\n".join("0" * len(line.expandtabs(4)) for line in seg.text.split("\n")))
-            else:
-                parts.append(seg.text)
-        return "".join(parts)
-
-    def fill_bubble_text(self, txt, text, segments):
-        """Put the message into `txt`, styled. Returns (text used for sizing, embedded buttons).
-
-        If anything goes wrong while styling, the bubble shows the plain message instead.
-        """
-        buttons = []
-        try:
-            self.configure_markdown_tags(txt)
-            for seg in segments:
-                if seg.copy is not None:
-                    button = self.make_code_copy_button(txt, seg.copy)
-                    txt.window_create("end", window=button, padx=6)
-                    buttons.append(button)
-                else:
-                    txt.insert("end", seg.text, seg.tags)
-            return self.measure_text(segments), buttons
-        except Exception:
-            for button in buttons:
-                button.destroy()
-            txt.delete("1.0", "end")
-            txt.insert("1.0", text)
-            return text, []
+            image = QLabel("🤖", objectName="welcomeEmoji")
+        else:
+            image = QLabel()
+            image.setPixmap(pixmap.scaled(360, 260, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        for widget in (image, QLabel(self.t("welcome_title"), objectName="welcomeTitle"),
+                       QLabel("Just an Unusually Genius Neural Utility", objectName="welcomeTagline"),
+                       QLabel(self.t("welcome_prompt"), objectName="welcomePrompt")):
+            layout.addWidget(widget, 0, Qt.AlignHCenter)
+        self.messages_layout.insertWidget(self.messages_layout.count() - 1, welcome)
 
     def add_bubble(self, role, text, timestamp=None):
-        c = self.colors
-        is_user = role == "user"
-        row = tk.Frame(self.messages_frame, bg=c["bg"])
-        row.pack(fill="x", pady=7, padx=8)
-        bubble = tk.Frame(row, bg=c["user"] if is_user else c["assistant"])
-        bubble.pack(side="right" if is_user else "left", padx=(40, 0) if is_user else (0, 40))
-        header = tk.Frame(bubble, bg=bubble["bg"])
-        header.pack(fill="x", padx=12, pady=(8, 2))
-
-        name = self.t("you_label") if is_user else "🤖 JUGNU"
-        name_lbl = tk.Label(header, text=name, bg=bubble["bg"], fg=c["accent"],
-                            font=("Segoe UI", 9, "bold"), anchor="w")
-        name_lbl.pack(side="left")
-
-        time_lbl = None
-        if timestamp:
-            time_lbl = tk.Label(header, text=timestamp, bg=bubble["bg"], fg=c["muted"],
-                                font=("Segoe UI", 8), anchor="w")
-            time_lbl.pack(side="left", padx=(8, 0))
-
-        # Per-message Read aloud button (next to name/copy for assistant messages)
-        read_btn = None
-        if not is_user:
-            read_btn = Button(header, text="🔊", command=lambda t=text: self.read_aloud(t),
-                                 relief="flat", bd=0, font=("Segoe UI Emoji", 10), cursor="hand2",
-                                 bg=bubble["bg"], fg=c["accent"], activebackground=bubble["bg"],
-                                 activeforeground=c["accent2"], disabledforeground=c["muted"],
-                                 state="normal" if self.tts.available else "disabled")
-            read_btn.pack(side="right", padx=(4, 0))
-            self.read_buttons.append(read_btn)
-
-        copy_btn = Button(header, text="⧉ Copy", font=("Segoe UI", 8, "bold"),
-                             relief="flat", bd=0, highlightthickness=0,
-                             bg=bubble["bg"], fg=c["muted"],
-                             highlightbackground=bubble["bg"],
-                             activebackground=c["border"], activeforeground=c["accent"],
-                             cursor="hand2", padx=6, pady=1)
-        copy_btn.pack(side="right", padx=(8, 0))
-        copy_btn.configure(command=lambda t=text, b=copy_btn: self.copy_to_clipboard(t, b))
-
-        hover_bg = c["border"]
-
-        def on_btn_enter(_event):
-            try:
-                if "Copied" not in copy_btn.cget("text"):
-                    copy_btn.configure(fg=c["accent"], bg=hover_bg)
-            except tk.TclError:
-                pass
-
-        def on_btn_leave(_event):
-            try:
-                if "Copied" not in copy_btn.cget("text"):
-                    copy_btn.configure(fg=c["muted"], bg=bubble["bg"])
-                else:
-                    copy_btn.configure(bg=bubble["bg"])
-            except tk.TclError:
-                pass
-
-        copy_btn.bind("<Enter>", on_btn_enter)
-        copy_btn.bind("<Leave>", on_btn_leave)
-
-        canvas_w = self.current_canvas_width()
-        # Assistant replies are Markdown; what you type yourself is always shown exactly as typed.
-        segments = None if is_user else render_markdown(text)
-        measure_text = text if segments is None else self.measure_text(segments)
-        calc_cols = self.compute_bubble_cols(measure_text, canvas_w)
-
-        txt = tk.Text(bubble, font=self.bubble_font, wrap="word", width=calc_cols,
-                      relief="flat", bd=0, highlightthickness=0,
-                      bg=bubble["bg"], fg=c["text"],
-                      selectbackground=c["accent"], selectforeground="white",
-                      inactiveselectbackground=c["accent"], cursor="xterm")
-        embedded_buttons = []
-        if segments is None:
-            txt.insert("1.0", text)
+        if not self.bubbles and self.messages_layout.count() > 1:
+            self.clear_messages()  # the first message replaces the welcome splash
+        bubble = Bubble(self, role, text, timestamp)
+        bubble.fit(max_bubble_width(self.scroll.viewport().width()))
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        holder = QWidget()
+        holder.setLayout(row)
+        if role == "user":
+            row.addStretch(1)
+            row.addWidget(bubble)
         else:
-            measure_text, embedded_buttons = self.fill_bubble_text(txt, text, segments)
-            txt.configure(width=self.bubble_cols(txt, measure_text, canvas_w))
-        txt.pack(fill="x", padx=12, pady=(2, 10))
+            row.addWidget(bubble)
+            row.addStretch(1)
+        self.messages_layout.insertWidget(self.messages_layout.count() - 1, holder)
+        self.bubbles.append(bubble)
+        return bubble
 
-        # Forward mouse wheel events so scrolling over bubbles scrolls the canvas
-        widgets_to_bind = [row, bubble, header, name_lbl, copy_btn, txt]
-        if read_btn:
-            widgets_to_bind.append(read_btn)
-        if time_lbl:
-            widgets_to_bind.append(time_lbl)
-        widgets_to_bind.extend(embedded_buttons)
-        for w in widgets_to_bind:
-            w.bind("<MouseWheel>", self.on_mousewheel)
-            w.bind("<Button-4>", self.on_mousewheel)
-            w.bind("<Button-5>", self.on_mousewheel)
+    def fit_bubbles(self):
+        width = max_bubble_width(self.scroll.viewport().width())
+        for bubble in self.bubbles:
+            bubble.fit(width)
 
-        def copy_selection(_event=None):
-            try:
-                sel = txt.get("sel.first", "sel.last")
-                if sel:
-                    self.root.clipboard_clear()
-                    self.root.clipboard_append(sel)
-                    self.root.update()
-                    return "break"
-            except tk.TclError:
-                pass
+    # ---------- Sending ----------
+    def start_task(self, work, slot):
+        """Run `work()` on a QThread; `slot(result)` then runs on the GUI thread."""
+        self.tasks = [task for task in self.tasks if task.isRunning()]
+        task = Task(work)
+        task.done.connect(slot)
+        self.tasks.append(task)
+        task.start()
 
-        for key in ("<Control-c>", "<Control-C>", "<Command-c>", "<Command-C>"):
-            txt.bind(key, copy_selection)
-
-        def select_all(_event=None):
-            txt.tag_add("sel", "1.0", "end - 1c")
-            return "break"
-
-        for key in ("<Control-a>", "<Control-A>", "<Command-a>", "<Command-A>"):
-            txt.bind(key, select_all)
-
-        menu = tk.Menu(txt, tearoff=0)
-        menu.add_command(label="Copy Selection", command=copy_selection)
-        menu.add_command(label="Select All", command=select_all)
-        menu.add_command(label="Copy All", command=lambda: self.copy_to_clipboard(text, copy_btn))
-
-        def show_context_menu(event):
-            try:
-                has_sel = bool(txt.tag_ranges("sel"))
-                menu.entryconfigure("Copy Selection", state="normal" if has_sel else "disabled")
-                menu.tk_popup(event.x_root, event.y_root)
-            except tk.TclError:
-                pass
-            finally:
-                try:
-                    menu.grab_release()
-                except tk.TclError:
-                    pass
-
-        txt.bind("<Button-3>", show_context_menu)
-        txt.bind("<Button-2>", show_context_menu)
-
-        self.root.update_idletasks()
-        h = self.fit_bubble_height(txt, measure_text)
-        txt.configure(height=h, state="disabled")
-
-        self.bubble_items.append((bubble, txt, measure_text))
-
-    def set_status(self, key, **kwargs):
-        # Store the key (not the text) so a language switch can re-translate the status line.
-        self._status = (key, kwargs)
-        self.status.configure(text="• " + self.t(key, **kwargs))
+    def wait_for_tasks(self, msecs):
+        """Wait up to `msecs` for running requests. True when none is left."""
+        return all(task.wait(msecs) for task in self.tasks)
 
     def warm_up(self):
-        def task():
-            result = ollama_chat([{"role": "user", "content": "Reply with OK."}],
-                                 timeout=90, keep_alive="10m", options={"num_predict": 3})
-            # Only "cannot reach Ollama" counts as offline; any reply at all means it is running.
-            if result.error in (ERROR_CONNECTION, ERROR_TIMEOUT):
-                self.root.after(0, lambda: self.set_status("status_offline"))
-            else:
-                self.root.after(0, lambda: self.set_status("status_ready"))
-        threading.Thread(target=task, daemon=True).start()
+        if self.closed:
+            return  # the window was closed before the delayed warm-up started
+        self.start_task(core.warm_up, self.on_warmed)
 
-    def is_time_question(self, text):
-        return detect_time_question(text)
+    def on_warmed(self, ok):
+        self.set_status("status_ready" if ok else "status_offline")
 
-    def extract_calc_expression(self, text):
-        """
-        Extracts an arithmetic expression from user input if present.
-        Supports explicit commands (e.g. 'calculate 12*7', 'solve 0/0'),
-        conversational math requests (e.g. 'the expression is 5/3+3', 'what is 12*7?'),
-        and plain arithmetic expressions (e.g. '12*7', '5/3+3').
-        Returns the expression string if detected, or None for general chat.
-        """
-        q = text.strip()
-        if not q:
-            return None
-
-        def is_math_ast(expr_str):
-            if re.search(r"\d{1,4}[-/]\d{1,2}[-/]\d{2,4}", expr_str):
-                return False
-            if re.fullmatch(r"[\d\.\s\+\-\*\/\%\(\)]+", expr_str):
-                if any(op in expr_str for op in ["+", "*", "/", "%"]) or re.search(r"\d\s*-\s*\d", expr_str):
-                    try:
-                        tree = ast.parse(expr_str, mode="eval")
-                        valid_nodes = (
-                            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
-                            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv,
-                            ast.Mod, ast.Pow, ast.USub, ast.UAdd
-                        )
-                        if all(isinstance(node, valid_nodes) for node in ast.walk(tree)):
-                            if any(isinstance(node, ast.BinOp) for node in ast.walk(tree)):
-                                return True
-                    except Exception:
-                        pass
-            return False
-
-        # 1. Direct command prefixes: 'calculate', 'calc', 'solve', 'evaluate'
-        match = re.match(r"^(?:calculate|calc|solve|evaluate)(?:[:\s]+(.*)|$)", q, flags=re.IGNORECASE)
-        if match:
-            remainder = match.group(1).strip() if match.group(1) else ""
-            # Strip optional 'the expression' / 'the value of' from remainder, e.g. 'calculate the expression 5/3+3'
-            remainder = re.sub(r"^(?:the\s+)?(?:expression|value\s+of)[:\s]*", "", remainder, flags=re.IGNORECASE).strip()
-            return remainder
-
-        # 2. Conversational math prefixes: 'the expression is ...', 'expression: ...', 'what is ...', 'value of ...'
-        m_conv = re.match(
-            r"^(?:(?:what\s+is|what\'s)\s+(?:the\s+)?(?:value\s+of|expression\s+is|expression)?|(?:the\s+)?(?:expression|value)\s+(?:is|of)|expression)[:\s]*(.*)$",
-            q, flags=re.IGNORECASE
-        )
-        if m_conv and m_conv.group(1).strip():
-            candidate = m_conv.group(1).strip().rstrip("?. ")
-            if is_math_ast(candidate):
-                return candidate
-
-        # 3. Plain arithmetic expression (e.g. '12*7', '5/3+3', '0/0')
-        if is_math_ast(q):
-            return q
-
-        return None
-
-    def send_message(self, _event=None):
+    def send_message(self):
         if self.busy:
-            return "break"
-        user_text = self.input_box.get("1.0", "end").strip()
+            return
+        user_text = self.input_box.toPlainText().strip()
         if not user_text:
-            return "break"
+            return
         self.tts.stop()  # A new message interrupts any reply still being read aloud.
         chat = self.current_chat()
         if not chat:
@@ -1512,45 +784,25 @@ class JugnuApp:
         if self.draft_chat and chat.get("id") == self.draft_chat.get("id"):
             self.chats.append(self.draft_chat)
             self.draft_chat = None
-        if chat.get("title") == "New Chat":
-            chat["title"] = user_text[:34]
-        time_now = message_time_text()
+        if chat.get("title") == core.NEW_CHAT_TITLE:
+            chat["title"] = user_text[:core.MAX_LIST_TITLE]
+        time_now = core.message_time_text()
         chat["messages"].append({"role": "user", "content": user_text, "time": time_now})
-        self.input_box.delete("1.0", "end")
+        self.input_box.clear()
         self.add_bubble("user", user_text, timestamp=time_now)
+        self.scroll_to_bottom()
         self.refresh_history_list()
         self.save_history()
         self.busy = True
-        self.send_btn.configure(state="disabled")
+        self.send_btn.setEnabled(False)
         self.set_status("status_thinking")
 
-        # Answer clock/date questions locally for accuracy and speed—no model call required.
-        if self.is_time_question(user_text):
-            answer = self.t("time_answer", when=local_datetime_text())
-            self.finish_answer(answer, chat["id"])
-            return "break"
-
-        # Answer arithmetic questions locally using safe AST calculator—no model call required.
-        calc_expr = self.extract_calc_expression(user_text)
-        if calc_expr is not None:
-            answer = calculate(calc_expr)
-            self.finish_answer(answer, chat["id"])
-            return "break"
-
-        self.busy = True
-        self.is_streaming = True
-        self.current_stream_chat_id = chat["id"]
-        if hasattr(self, "stop_event") and self.stop_event is not None:
-            self.stop_event.clear()
-        self.send_btn.configure(state="disabled")
-        if hasattr(self, "stop_gen_btn"):
-            self.stop_gen_btn.pack(side="right", padx=(0, 8))
-        self.set_status("status_streaming")
-        time_assistant = message_time_text()
-        self.create_streaming_bubble(chat["id"], timestamp=time_assistant)
-
-        threading.Thread(target=self.ask_ollama, args=(chat["id"],), daemon=True).start()
-        return "break"
+        # Clock/date and arithmetic questions are answered locally—no model call required.
+        answer = core.local_answer(user_text, self.language)
+        if answer is not None:
+            self.finish_answer(chat["id"], answer, False)
+            return
+        self.ask_ollama(chat["id"])
 
     def create_streaming_bubble(self, chat_id, timestamp=None):
         if getattr(self, "current_id", None) != chat_id:
@@ -1782,171 +1034,68 @@ class JugnuApp:
             self.refresh_history_list()
 
     def ask_ollama(self, chat_id):
+        # The worker gets a copy, so it never reads the list while the GUI changes it.
+        chat = {"messages": [dict(m) for m in self.find_chat(chat_id)["messages"]]}
         language = self.language  # The prompt and any error text use the language chosen at send time.
-        saved_chat = next((c for c in self.chats if c.get("id") == chat_id), None)
-        if not saved_chat:
-            # The conversation may have been cleared while the request was running.
-            self.root.after(0, lambda: self.finish_answer(None, chat_id))
-            return
-        messages = build_messages(build_system_prompt(language, local_datetime_text()),
-                                  saved_chat.get("messages", []))
-        # The request itself is shared with the command-line version (core.py); the wording
-        # of each failure below is this window's own, so it can be translated.
-        result = ollama_chat(messages, timeout=180, keep_alive="10m",
-                             options={"num_predict": 256, "temperature": 0.6})
-        is_error = True
-        if result.ok and result.answer:
-            answer, is_error = result.answer, False
-        elif result.ok:
-            answer = get_string(language, "error_empty_reply")
-        elif result.error == ERROR_INVALID:
-            answer = get_string(language, "error_invalid_response")
-        elif result.error == ERROR_TIMEOUT:
-            answer = get_string(language, "error_timeout")
-        elif result.error == ERROR_CONNECTION:
-            answer = get_string(language, "error_connection")
-        else:
-            answer = get_string(language, "error_generic", error=result.detail)
-        self.root.after(0, lambda: self.finish_answer(answer, chat_id, is_error=is_error))
-        accumulated = []
-        is_error = False
-        error_message = None
+        self.start_task(lambda: (chat_id, *core.ask_ollama(chat, language)), self.on_answer)
 
-        if not hasattr(self, "stop_event") or self.stop_event is None:
-            self.stop_event = threading.Event()
+    def on_answer(self, result):
+        self.finish_answer(*result)
 
-        try:
-            chat = next((c for c in self.chats if c.get("id") == chat_id), None)
-            if not chat:
-                # The conversation may have been cleared while the request was running.
-                self.root.after(0, lambda: self.finish_streaming(chat_id, "", is_error=True))
-                return
-            # Keep recent context only, to reduce prompt size and improve latency.
-            recent = [
-                m for m in chat.get("messages", [])
-                if not (m["role"] == "assistant" and m.get("is_error") is True)
-            ][-10:]
-            messages = [{
-                "role": "system",
-                "content": build_system_prompt(language, local_datetime_text())
-            }]
-            messages.extend({"role": m["role"], "content": m["content"]} for m in recent)
-            response = requests.post(OLLAMA_URL, json={
-                "model": MODEL,
-                "messages": messages,
-                "stream": True,
-                "keep_alive": "10m",
-                "options": {"num_predict": 256, "temperature": 0.6}
-            }, stream=True, timeout=180)
-            self.current_stream_response = response
-            response.raise_for_status()
-
-            for line in iter_response_lines(response):
-                if self.stop_event.is_set():
-                    break
-                if not line:
-                    continue
-                try:
-                    if isinstance(line, (bytes, bytearray)):
-                        raw_str = line.decode("utf-8").strip()
-                    else:
-                        raw_str = str(line).strip()
-                    if not raw_str:
-                        continue
-                    data = json.loads(raw_str)
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    raise InvalidOllamaResponse()
-
-                token, is_done = ollama_stream_chunk(data)
-                if token:
-                    accumulated.append(token)
-                    self.root.after(0, lambda t=token: self.append_stream_token(chat_id, t))
-                if is_done:
-                    break
-
-            if not "".join(accumulated).strip() and not self.stop_event.is_set():
-                is_error = True
-                error_message = get_string(language, "error_empty_reply")
-
-        except InvalidOllamaResponse:
-            is_error = True
-            error_message = get_string(language, "error_invalid_response")
-        except requests.Timeout:
-            is_error = True
-            error_message = get_string(language, "error_timeout")
-        except requests.ConnectionError:
-            is_error = True
-            error_message = get_string(language, "error_connection")
-        except (requests.RequestException, ValueError) as e:
-            is_error = True
-            error_message = get_string(language, "error_generic", error=e)
-        finally:
-            full_text = "".join(accumulated)
-            self.root.after(0, lambda: self.finish_streaming(
-                chat_id, full_text, is_error=is_error, error_message=error_message
-            ))
-
-    def finish_answer(self, answer, chat_id=None, is_error=False):
-        self.busy = False
-        self.is_streaming = False
-        self.current_stream_chat_id = None
-        self.current_stream_response = None
-        if hasattr(self, "stop_gen_btn"):
-            try:
-                self.stop_gen_btn.pack_forget()
-            except Exception:
-                pass
-        chat = self.current_chat()
-        if chat_id:
-            chat = next((c for c in self.chats if c.get("id") == chat_id), None)
-        time_now = message_time_text()
+    def finish_answer(self, chat_id, answer, is_error=False):
+        chat = self.find_chat(chat_id)  # may be gone if it was deleted while the request ran
+        time_now = core.message_time_text()
         if chat and isinstance(answer, str) and answer.strip():
             message = {"role": "assistant", "content": answer, "time": time_now}
             if is_error:
                 message["is_error"] = True
             chat["messages"].append(message)
             self.save_history()
-        # Only display if the user is still viewing the chat that received the answer.
-        if chat and chat.get("id") == self.current_id:
-            self.add_bubble("assistant", answer, timestamp=time_now)
-            if hasattr(self, "canvas"):
-                self.canvas.yview_moveto(1.0)
-            if getattr(self, "voice_enabled", False) and hasattr(self, "tts"):
-                self.tts.speak(plain_text(answer))
-        if hasattr(self, "busy"):
-            self.busy = False
-        if hasattr(self, "send_btn"):
-            self.send_btn.configure(state="normal")
-        if hasattr(self, "set_status"):
-            self.set_status("status_ready")
-        if hasattr(self, "refresh_history_list"):
-            self.refresh_history_list()
+            # Only display if the user is still viewing the chat that received the answer.
+            if chat_id == self.current_id:
+                self.add_bubble("assistant", answer, timestamp=time_now)
+                self.scroll_to_bottom()
+                if self.voice_enabled:
+                    self.tts.speak(plain_text(answer))
+        self.busy = False
+        self.send_btn.setEnabled(True)
+        self.set_status("status_ready")
+        self.refresh_history_list()
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    root.withdraw()
-    lock = HistoryLock(HISTORY_FILE)
+    def closeEvent(self, event):
+        self.closed = True
+        self.speech_timer.stop()
+        self.tts.shutdown()
+        super().closeEvent(event)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("JUGNU")
+    lock = HistoryLock(core.HISTORY_FILE)
     try:
         lock.acquire()
     except HistoryInUseError:
-        messagebox.showerror(
-            "Chat history in use",
-            "Another JUGNU window is using this chat history. Close that window before opening another.",
-            parent=root,
-        )
-        root.destroy()
+        QMessageBox.critical(None, "Chat history in use",
+                             "Another JUGNU window is using this chat history. "
+                             "Close that window before opening another.")
+        return 1
     except OSError as error:
-        messagebox.showerror(
-            "Chat history unavailable",
-            f"Could not lock chat history.\n\n{error}",
-            parent=root,
-        )
-        root.destroy()
-    else:
-        try:
-            app = JugnuApp(root)
-            root.protocol("WM_DELETE_WINDOW", app.on_close)
-            root.deiconify()
-            root.mainloop()
-        finally:
-            lock.release()
+        QMessageBox.critical(None, "Chat history unavailable", f"Could not lock chat history.\n\n{error}")
+        return 1
+    try:
+        window = JugnuWindow()
+        window.show()
+        code = app.exec()
+        finished = window.wait_for_tasks(2000)
+    finally:
+        lock.release()
+    if not finished:
+        # A request is still waiting on Ollama. A running QThread aborts the process when it is
+        # destroyed, so leave right away; the history was already saved when the message was sent.
+        os._exit(code)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

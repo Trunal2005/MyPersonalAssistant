@@ -73,9 +73,10 @@ git checkout -b fix/your-bugfix-name
 - Install dependencies (pip install -r requirements.txt).
 - If working with Ollama, ensure ollama run llama3.2:3b is accessible.
 - Test your changes:
-  `ash
+  ```bash
   python desktop_app.py
-  `
+  python -m pytest
+  ```
 
 ### 5. Commit & Push
 - Write clear commit messages:

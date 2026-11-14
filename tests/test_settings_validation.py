@@ -1,15 +1,11 @@
 import pytest
 
-from desktop_app import JugnuApp
+import jugnu_core
 
 
 @pytest.fixture
-def app(tmp_path, monkeypatch):
-    settings_file = tmp_path / "jugnu_settings.json"
-    monkeypatch.setattr("desktop_app.SETTINGS_FILE", str(settings_file))
-
-    # Create the application without launching Tkinter.
-    return JugnuApp.__new__(JugnuApp)
+def load_settings(tmp_path):
+    return lambda: jugnu_core.load_dark_mode(tmp_path / "jugnu_settings.json")
 
 
 @pytest.mark.parametrize(
@@ -21,11 +17,11 @@ def app(tmp_path, monkeypatch):
         "123",
     ],
 )
-def test_load_settings_returns_default_for_non_dict_json(app, tmp_path, content):
+def test_load_settings_returns_default_for_non_dict_json(load_settings, tmp_path, content):
     settings_file = tmp_path / "jugnu_settings.json"
     settings_file.write_text(content, encoding="utf-8")
 
-    assert app.load_settings() is True
+    assert load_settings() is True
 
 
 @pytest.mark.parametrize(
@@ -36,19 +32,19 @@ def test_load_settings_returns_default_for_non_dict_json(app, tmp_path, content)
         ('{}', True),
     ],
 )
-def test_load_settings_handles_valid_dict(app, tmp_path, content, expected):
+def test_load_settings_handles_valid_dict(load_settings, tmp_path, content, expected):
     settings_file = tmp_path / "jugnu_settings.json"
     settings_file.write_text(content, encoding="utf-8")
 
-    assert app.load_settings() is expected
+    assert load_settings() is expected
 
 
-def test_load_settings_handles_invalid_json(app, tmp_path):
+def test_load_settings_handles_invalid_json(load_settings, tmp_path):
     settings_file = tmp_path / "jugnu_settings.json"
     settings_file.write_text("{invalid json", encoding="utf-8")
 
-    assert app.load_settings() is True
+    assert load_settings() is True
 
 
-def test_load_settings_handles_missing_file(app):
-    assert app.load_settings() is True
+def test_load_settings_handles_missing_file(load_settings):
+    assert load_settings() is True
