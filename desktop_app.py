@@ -10,14 +10,17 @@ import sys
 
 from PySide6.QtCore import QEvent, QThread, Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QKeySequence, QPixmap, QShortcut, QTextOption
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFrame, QHBoxLayout, QInputDialog,
-                               QLabel, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-                               QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
-                               QTextBrowser, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout,
+                               QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton,
+                               QScrollArea, QSizePolicy, QSlider, QTextBrowser, QVBoxLayout,
+                               QWidget)
 
 import jugnu_core as core
+from export_manager import export_chat
 from history_lock import HistoryInUseError, HistoryLock
 from markdown_render import plain_text, render_html
+from search_engine import SearchEngine
 from strings import get_string, next_language
 from tts import RATE_MAX, RATE_MIN, TTSManager
 
@@ -320,7 +323,6 @@ class JugnuWindow(QMainWindow):
         self.closed = False
 
         self.build_ui()
-        self.root.bind("<Escape>", self._on_escape)
         if self.chats:
             self.current_id = self.chats[-1]["id"]  # Reopen most recent saved conversation.
         else:
@@ -356,6 +358,10 @@ class JugnuWindow(QMainWindow):
         side.addSpacing(10)
         self.history_label = QLabel(objectName="historyLabel")
         side.addWidget(self.history_label)
+        self.search_entry = QLineEdit(objectName="searchEntry")
+        self.search_entry.setClearButtonEnabled(True)
+        self.search_entry.textChanged.connect(self.on_search_query_changed)
+        side.addWidget(self.search_entry)
         self.history_list = QListWidget(objectName="historyList")
         self.history_list.itemClicked.connect(self.select_chat)
         self.history_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -423,6 +429,14 @@ class JugnuWindow(QMainWindow):
         main.addWidget(content, 1)
 
         QShortcut(QKeySequence("Ctrl+N"), self, self.new_chat)
+        QShortcut(QKeySequence("Ctrl+F"), self, self.focus_search)
+
+    def focus_search(self):
+        self.search_entry.setFocus()
+        self.search_entry.selectAll()
+
+    def on_search_query_changed(self, _text):
+        self.refresh_history_list()
 
     def sidebar_button(self, layout, slot):
         button = QPushButton()
@@ -493,6 +507,7 @@ class JugnuWindow(QMainWindow):
         # Set every piece of visible text from the strings dictionary.
         self.new_btn.setText(self.t("new_chat_btn"))
         self.history_label.setText(self.t("history_label"))
+        self.search_entry.setPlaceholderText(self.t("search_placeholder"))
         self.clear_btn.setText(self.t("clear_chat_btn"))
         self.voice_btn.setText(self.voice_button_text())
         self.voice_settings_btn.setText(self.t("voice_settings_btn"))
@@ -589,7 +604,28 @@ class JugnuWindow(QMainWindow):
 
     def refresh_history_list(self):
         self.history_list.clear()
-        for chat in reversed(self.chats):  # newest first
+        query = self.search_entry.text().strip() if hasattr(self, "search_entry") else ""
+        if not query:
+            chats_to_show = list(reversed(self.chats))
+            self.history_label.setText(self.t("history_label"))
+        else:
+            engine = SearchEngine(self.chats)
+            results = engine.search(query)
+            seen_ids = set()
+            ordered_chats = []
+            for r in results:
+                if r.chat_id not in seen_ids:
+                    seen_ids.add(r.chat_id)
+                    chat = self.find_chat(r.chat_id)
+                    if chat:
+                        ordered_chats.append(chat)
+            chats_to_show = ordered_chats
+            if chats_to_show:
+                self.history_label.setText(self.t("search_matches_count", count=len(chats_to_show)))
+            else:
+                self.history_label.setText(self.t("search_no_matches"))
+
+        for chat in chats_to_show:  # newest first or ranked by search
             item = QListWidgetItem(core.list_title(chat.get("title", core.NEW_CHAT_TITLE)))
             item.setData(Qt.UserRole, chat["id"])
             item.setToolTip(chat.get("title", ""))
@@ -621,10 +657,54 @@ class JugnuWindow(QMainWindow):
         chat_id = item.data(Qt.UserRole)  # the menu acts on the chat that was clicked, not on its row
         menu = QMenu(self)
         menu.setAttribute(Qt.WA_DeleteOnClose)
+        menu.addAction(self.t("chat_menu_export"), lambda: self.export_chat_dialog(chat_id))
+        menu.addSeparator()
         menu.addAction(self.t("chat_menu_rename"), lambda: self.rename_chat(chat_id))
         menu.addAction(self.t("chat_menu_delete"), lambda: self.delete_chat(chat_id))
         menu.popup(self.history_list.viewport().mapToGlobal(pos))
         return menu
+
+    def export_chat_dialog(self, chat_id):
+        chat = self.find_chat(chat_id)
+        if not chat:
+            return
+        default_title = chat.get("title", "chat")
+        clean_title = "".join(c for c in default_title if c.isalnum() or c in (" ", "_", "-")).strip() or "chat"
+        default_file = os.path.join(os.path.expanduser("~"), f"{clean_title}.md")
+        filter_str = "Markdown (*.md);;HTML (*.html);;JSON (*.json);;Plain Text (*.txt)"
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            self.t("export_dialog_title"),
+            default_file,
+            filter_str
+        )
+        if not file_path:
+            return
+        ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+        if not ext:
+            if "html" in selected_filter.lower():
+                ext = "html"
+            elif "json" in selected_filter.lower():
+                ext = "json"
+            elif "txt" in selected_filter.lower():
+                ext = "txt"
+            else:
+                ext = "md"
+            file_path = f"{file_path}.{ext}"
+
+        try:
+            export_chat(chat, ext, file_path, dark_mode=self.dark_mode)
+            QMessageBox.information(
+                self,
+                self.t("export_success_title"),
+                self.t("export_success_msg", path=file_path)
+            )
+        except Exception as error:
+            QMessageBox.warning(
+                self,
+                "Export Error",
+                self.t("export_error_msg", error=str(error))
+            )
 
     def ask_chat_title(self, initial):
         """Returns the text entered, or None if it was cancelled."""

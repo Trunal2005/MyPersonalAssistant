@@ -59,6 +59,15 @@ STRINGS = {
         "delete_chat_message": "Permanently delete “{title}”? This cannot be undone.",
         "code_copy_btn": "⧉ Copy code",
         "code_copied_btn": "✓ Copied!",
+        # Search and Export
+        "search_placeholder": "🔍 Search chats... (Ctrl+F)",
+        "search_matches_count": "{count} found",
+        "search_no_matches": "No matches found",
+        "chat_menu_export": "⤓  Export Chat…",
+        "export_dialog_title": "Export Chat Transcript",
+        "export_success_title": "Export Successful",
+        "export_success_msg": "Chat successfully exported to {path}",
+        "export_error_msg": "Could not export chat: {error}",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -119,6 +128,15 @@ STRINGS = {
         "delete_chat_message": "“{title}” ko permanently delete kar dein? Ye wapas nahi aayegi.",
         "code_copy_btn": "⧉ Code copy karo",
         "code_copied_btn": "✓ Copy ho gaya!",
+        # Search and Export
+        "search_placeholder": "🔍 Chats dhoondein... (Ctrl+F)",
+        "search_matches_count": "{count} mile",
+        "search_no_matches": "Koi match nahi mila",
+        "chat_menu_export": "⤓  Chat Export Karo…",
+        "export_dialog_title": "Chat Export Karein",
+        "export_success_title": "Export Ho Gaya",
+        "export_success_msg": "Chat safaltapoorvak {path} par export ho gayi",
+        "export_error_msg": "Chat export nahi ho saki: {error}",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",
