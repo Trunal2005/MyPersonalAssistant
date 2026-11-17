@@ -108,6 +108,13 @@ STRINGS = {
         "kb_results_placeholder": "Retrieved chunks with BM25, Cosine, and RRF scores will appear here.",
         "kb_select_file": "Select Document to Index",
         "kb_select_folder": "Select Folder to Index",
+        # Document Attachment and Ingestion
+        "attach_file_btn": "📎 Attach",
+        "attach_dialog_title": "Select Document or Code File",
+        "attach_error_title": "Attachment Error",
+        "attach_err_binary": "Cannot attach binary file: {filename}",
+        "attach_err_large": "File too large: {filename} ({size}). Limit is 512 KB.",
+        "attach_err_read": "Could not read file: {error}",
         # Model switcher and pull manager
         "model_btn": "🧠 {name}",
         "model_menu_title": "Local Models",
@@ -237,6 +244,13 @@ STRINGS = {
         "kb_results_placeholder": "BM25, Cosine aur RRF scores wale chunks yahan dikhenge.",
         "kb_select_file": "Index karne ke liye document chunein",
         "kb_select_folder": "Index karne ke liye folder chunein",
+        # Document Attachment and Ingestion
+        "attach_file_btn": "📎 Jodein",
+        "attach_dialog_title": "Document ya Code File Chunein",
+        "attach_error_title": "Attachment Error",
+        "attach_err_binary": "Binary file attach nahi kar sakte: {filename}",
+        "attach_err_large": "File bahut badi hai: {filename} ({size}). Limit 512 KB hai.",
+        "attach_err_read": "File read nahi ho saki: {error}",
         # Model switcher and pull manager
         "model_btn": "🧠 {name}",
         "model_menu_title": "Local Models",
