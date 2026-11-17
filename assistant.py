@@ -19,6 +19,7 @@ from core import (
 )
 from export_manager import export_chat
 from personas import get_persona, list_personas
+from rag_engine import get_knowledge_base
 from scheduler import CronEvaluator, ScheduledTask, TaskStore
 from search_engine import SearchEngine
 
@@ -129,8 +130,9 @@ def show_help():
     print("7. /export [id] <format> - Export chat to md, html, json, or txt")
     print("8. /chats                - List all saved conversation history")
     print("9. /schedule             - Manage proactive background tasks and cron jobs")
-    print("10. help                 - Show available commands")
-    print("11. bye                  - Exit the assistant")
+    print("10. /rag                 - Local knowledge base RAG index & search")
+    print("11. help                 - Show available commands")
+    print("12. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -346,6 +348,52 @@ def run_assistant(persona_name="default"):
                     print(f"\nAssistant: Deleted scheduled task [{task.id}] '{task.title}'.")
             else:
                 print(f"\nAssistant: Unknown schedule action '{subcmd}'. Available: list, add, run, toggle, delete.")
+
+        # RAG / Local Knowledge Base commands
+        elif command.startswith("/rag") or command.startswith("rag"):
+            kb = get_knowledge_base()
+            args_str = user_input.split(maxsplit=1)[1].strip() if len(user_input.split(maxsplit=1)) > 1 else ""
+            subparts = args_str.split(maxsplit=1)
+            subcmd = subparts[0].lower() if subparts else "status"
+            subarg = subparts[1].strip() if len(subparts) > 1 else ""
+
+            if subcmd in ["status", ""]:
+                print(f"\nKnowledge Base Status:")
+                print(f"• Indexed Documents: {len(kb.indexed_files)}")
+                print(f"• Total Chunks:     {len(kb.chunks)}")
+                if kb.indexed_files:
+                    print("  Files:")
+                    for f in sorted(kb.indexed_files):
+                        print(f"   - {f}")
+            elif subcmd == "index":
+                if not subarg:
+                    print("\nAssistant: Usage: /rag index <folder_or_file_path>")
+                elif os.path.isdir(subarg):
+                    cnt = kb.add_directory(subarg, recursive=True)
+                    print(f"\nAssistant: Successfully indexed directory '{subarg}' ({cnt} chunks).")
+                elif os.path.isfile(subarg):
+                    cnt = kb.add_file(subarg)
+                    print(f"\nAssistant: Successfully indexed file '{subarg}' ({cnt} chunks).")
+                else:
+                    print(f"\nAssistant: Path '{subarg}' does not exist.")
+            elif subcmd == "search":
+                if not subarg:
+                    print("\nAssistant: Usage: /rag search <query>")
+                else:
+                    matches = kb.query(subarg, top_k=3)
+                    if not matches:
+                        print(f"\nAssistant: No relevant chunks found for '{subarg}'.")
+                    else:
+                        print(f"\nSearch results for '{subarg}':")
+                        for idx, m in enumerate(matches, 1):
+                            c = m["chunk"]
+                            print(f"{idx}. {c.doc_name} (RRF: {m['rrf_score']:.4f})")
+                            print(f"   {c.text[:120]}...\n")
+            elif subcmd == "clear":
+                kb.clear()
+                print("\nAssistant: Knowledge base index cleared.")
+            else:
+                print(f"\nAssistant: Unknown RAG action '{subcmd}'. Available: status, index, search, clear.")
 
         # General AI question
         else:
