@@ -97,6 +97,13 @@ STRINGS = {
         "tool_status_success": "Success",
         "tool_status_error": "Error",
         "tool_btn_details": "Details",
+        # Document Attachment and Ingestion
+        "attach_file_btn": "📎 Attach",
+        "attach_dialog_title": "Select Document or Code File",
+        "attach_error_title": "Attachment Error",
+        "attach_err_binary": "Cannot attach binary file: {filename}",
+        "attach_err_large": "File too large: {filename} ({size}). Limit is 512 KB.",
+        "attach_err_read": "Could not read file: {error}",
         # Model switcher and pull manager
         "model_btn": "🧠 {name}",
         "model_menu_title": "Local Models",
@@ -215,6 +222,13 @@ STRINGS = {
         "tool_status_success": "Safal",
         "tool_status_error": "Truti",
         "tool_btn_details": "Jankari",
+        # Document Attachment and Ingestion
+        "attach_file_btn": "📎 Jodein",
+        "attach_dialog_title": "Document ya Code File Chunein",
+        "attach_error_title": "Attachment Error",
+        "attach_err_binary": "Binary file attach nahi kar sakte: {filename}",
+        "attach_err_large": "File bahut badi hai: {filename} ({size}). Limit 512 KB hai.",
+        "attach_err_read": "File read nahi ho saki: {error}",
         # Model switcher and pull manager
         "model_btn": "🧠 {name}",
         "model_menu_title": "Local Models",
