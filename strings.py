@@ -92,6 +92,11 @@ STRINGS = {
         "auto_task_resume": "Resume Scheduler",
         "auto_notify_success": "Task “{name}” completed successfully.",
         "auto_notify_error": "Task “{name}” failed: {error}",
+        # Memory Manager
+        "memory_btn": "🧠  Memory",
+        "memory_dialog_title": "User Memory & Preference Manager",
+        "memory_enabled": "Enable Persistent Memory",
+        "memory_clear_confirm": "Are you sure you want to delete all memory facts?",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -185,6 +190,11 @@ STRINGS = {
         "auto_task_resume": "Scheduler Shuru Karo",
         "auto_notify_success": "Task “{name}” safaltapoorvak pura ho gaya.",
         "auto_notify_error": "Task “{name}” fail ho gaya: {error}",
+        # Memory Manager
+        "memory_btn": "🧠  Yaadein",
+        "memory_dialog_title": "User Memory aur Pasand Manager",
+        "memory_enabled": "Persistent Memory Chalu Rakhein",
+        "memory_clear_confirm": "Kya aap sach me saari yaadein mitana chahte hain?",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",
@@ -249,6 +259,14 @@ def build_system_prompt(language, now_text, persona=None):
         intro = persona.system_prompt.strip() + " "
     else:
         intro = SYSTEM_PROMPT_INTRO
-    return (intro
+    prompt = (intro
             + get_string(language, "prompt_language_rule")
             + SYSTEM_PROMPT_CLOCK.format(now=now_text))
+    try:
+        from memory import get_memory_store
+        mem_ctx = get_memory_store().build_memory_context()
+        if mem_ctx:
+            prompt += f"\n\n{mem_ctx}"
+    except Exception:
+        pass
+    return prompt
