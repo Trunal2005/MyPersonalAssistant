@@ -106,6 +106,13 @@ STRINGS = {
         "fork_tooltip": "Fork chat into a new conversation from here",
         "fork_success_title": "Chat Forked",
         "fork_success_msg": "Forked conversation created: {title}",
+        # Document Attachment and Ingestion
+        "attach_file_btn": "📎 Attach",
+        "attach_dialog_title": "Select Document or Code File",
+        "attach_error_title": "Attachment Error",
+        "attach_err_binary": "Cannot attach binary file: {filename}",
+        "attach_err_large": "File too large: {filename} ({size}). Limit is 512 KB.",
+        "attach_err_read": "Could not read file: {error}",
         # Model switcher and pull manager
         "model_btn": "🧠 {name}",
         "model_menu_title": "Local Models",
@@ -233,6 +240,13 @@ STRINGS = {
         "fork_tooltip": "Yahan se nayi chat fork karein",
         "fork_success_title": "Chat Fork Ho Gayi",
         "fork_success_msg": "Nayi forked chat ban gayi: {title}",
+        # Document Attachment and Ingestion
+        "attach_file_btn": "📎 Jodein",
+        "attach_dialog_title": "Document ya Code File Chunein",
+        "attach_error_title": "Attachment Error",
+        "attach_err_binary": "Binary file attach nahi kar sakte: {filename}",
+        "attach_err_large": "File bahut badi hai: {filename} ({size}). Limit 512 KB hai.",
+        "attach_err_read": "File read nahi ho saki: {error}",
         # Model switcher and pull manager
         "model_btn": "🧠 {name}",
         "model_menu_title": "Local Models",

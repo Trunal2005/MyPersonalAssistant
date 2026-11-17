@@ -18,6 +18,12 @@ from core import (
     is_time_question,
     local_now,
 )
+from context_ingest import (
+    AttachedDocument,
+    AttachmentError,
+    assemble_prompt_with_attachments,
+    ingest_file,
+)
 from export_manager import export_chat
 from models import (
     DEFAULT_MODEL,
@@ -83,13 +89,18 @@ def get_date():
 
 # ---------------- AI CHAT ----------------
 
-def ask_ai(user_message, persona=None, model=None):
+def ask_ai(user_message, persona=None, model=None, attachments=None):
     if isinstance(persona, str):
         persona = get_persona(persona)
     system_prompt = (persona.system_prompt + "\n\n") if persona and getattr(persona, "system_prompt", None) else SYSTEM_PROMPT
     options = {"temperature": persona.temperature} if persona and hasattr(persona, "temperature") else None
+    prompt_text = (
+        assemble_prompt_with_attachments(user_message, attachments)
+        if attachments
+        else user_message
+    )
     result = chat(
-        build_messages(system_prompt, [{"role": "user", "content": user_message}]),
+        build_messages(system_prompt, [{"role": "user", "content": prompt_text}]),
         model=model,
         options=options,
     )
@@ -135,26 +146,40 @@ def show_help():
     print("5. /model <name>         - Switch active Ollama model")
     print("6. personas              - List all available assistant personas")
     print("7. persona <name>        - Switch active persona (e.g. persona code)")
-    print("8. /search <query>       - Search across conversation history")
-    print("9. /export [id] <format> - Export chat to md, html, json, or txt")
-    print("10. /chats               - List all saved conversation history")
-    print("11. /schedule            - Manage proactive background tasks and cron jobs")
-    print("12. help                 - Show available commands")
-    print("13. bye                  - Exit the assistant")
+    print("8. /attach <path>        - Attach a local code or text file")
+    print("9. /files                - List attached files")
+    print("10. /detach              - Clear all attachments")
+    print("11. /search <query>      - Search across conversation history")
+    print("12. /export [id] <format> - Export chat to md, html, json, or txt")
+    print("13. /chats               - List all saved conversation history")
+    print("14. /schedule            - Manage proactive background tasks and cron jobs")
+    print("15. help                 - Show available commands")
+    print("16. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
 # ---------------- MAIN ASSISTANT ----------------
 
-def run_assistant(model=None, persona_name="default"):
+def run_assistant(model=None, persona_name="default", initial_files=None):
     active_persona = get_persona(persona_name)
     active_model = resolve_active_model(model or DEFAULT_MODEL)
+    active_attachments: list[AttachedDocument] = []
+    if initial_files:
+        for file_path in initial_files:
+            try:
+                doc = ingest_file(file_path)
+                active_attachments.append(doc)
+                print(f"[Attached: {doc.filename} ({doc.formatted_size})]")
+            except AttachmentError as err:
+                print(f"[Attachment error: {err}]")
     greet()
     if active_persona and active_persona.id != "default":
         print(f"Active Persona: {active_persona.display_label} (temp: {active_persona.temperature})")
 
     while True:
-        prompt_prefix = f"\nYou ({active_model}): " if active_model != DEFAULT_MODEL else "\nYou: "
+        model_part = f" ({active_model})" if active_model != DEFAULT_MODEL else ""
+        attach_part = f" [{len(active_attachments)} attached]" if active_attachments else ""
+        prompt_prefix = f"\nYou{model_part}{attach_part}: "
         user_input = input(prompt_prefix).strip()
 
         if not user_input:
@@ -227,6 +252,36 @@ def run_assistant(model=None, persona_name="default"):
                 print(f"\nAssistant: Switched active model to '{active_model}'.")
             else:
                 print(f"\nAssistant: Current active model is '{active_model}'.")
+
+        # Attach local file
+        elif command.startswith("/attach ") or command.startswith("/file "):
+            parts = user_input.split(maxsplit=1)
+            target = parts[1].strip() if len(parts) > 1 else ""
+            if not target:
+                print("\nAssistant: Please provide a file path, e.g. /attach path/to/file.py")
+            else:
+                try:
+                    doc = ingest_file(target)
+                    active_attachments.append(doc)
+                    print(f"\nAssistant: Attached '{doc.filename}' ({doc.formatted_size}, {doc.language}).")
+                except AttachmentError as err:
+                    print(f"\nAssistant: Could not attach file: {err}")
+
+        # List attached files
+        elif command in ["/files", "/attachments"]:
+            if not active_attachments:
+                print("\nAssistant: No files attached.")
+            else:
+                print("\nAttached files:")
+                for idx, doc in enumerate(active_attachments, 1):
+                    trunc = " (truncated)" if doc.is_truncated else ""
+                    print(f"{idx}. {doc.filename} ({doc.formatted_size}, {doc.language}){trunc}")
+
+        # Detach all attachments
+        elif command in ["/detach", "/clear-attachments"]:
+            count = len(active_attachments)
+            active_attachments.clear()
+            print(f"\nAssistant: Cleared {count} attached file(s).")
 
         # Search conversations
         elif command.startswith("/search"):
@@ -384,8 +439,9 @@ def run_assistant(model=None, persona_name="default"):
         # General AI question
         else:
             print(f"\nAssistant: Thinking ({active_model})...")
-            answer = ask_ai(user_input, persona=active_persona, model=active_model)
+            answer = ask_ai(user_input, persona=active_persona, model=active_model, attachments=active_attachments)
             print("\nAssistant:", answer)
+            active_attachments.clear()
 
 
 # ---------------- START ----------------
@@ -395,5 +451,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="JUGNU Terminal Assistant")
     parser.add_argument("--model", type=str, default=None, help="Ollama model to use")
     parser.add_argument("--persona", default="default", help="Initial persona (default, code, creative, tutor, concise)")
+    parser.add_argument("--file", "-f", action="append", help="Path to local file to attach")
     args, _ = parser.parse_known_args()
-    run_assistant(model=args.model, persona_name=args.persona)
+    run_assistant(model=args.model, persona_name=args.persona, initial_files=args.file)
