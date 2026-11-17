@@ -51,6 +51,19 @@ QPushButton[variant="stop"]:hover {
     background: #4B2A40;
     color: #D946A6;
 }
+/* Model switcher */
+QPushButton#modelBtn {
+    background: transparent;
+    color: #8B6CF0;
+    border: 1px solid #463A66;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 8.5pt;
+    font-weight: 600;
+}
+QPushButton#modelBtn:hover {
+    background: #211D35;
+}
 /* Small text buttons inside a chat bubble (Copy, Read aloud). */
 QPushButton[variant="ghost"] {
     background: transparent;
