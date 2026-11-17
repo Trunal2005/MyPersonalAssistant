@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QWidget)
 
 import jugnu_core as core
+from agent_tools import ToolRegistry
 from automation_dialog import AutomationDialog
 from export_manager import export_chat
 from history_lock import HistoryInUseError, HistoryLock
@@ -25,6 +26,7 @@ from personas import get_default_manager, get_persona, list_personas
 from scheduler import BackgroundScheduler, CronEvaluator, ScheduledTask, TaskStore
 from search_engine import SearchEngine
 from strings import get_string, next_language
+from tool_card_widget import ToolExecutionWidget
 from tray_daemon import JugnuTrayIcon
 from tts import RATE_MAX, RATE_MIN, TTSManager
 
@@ -516,6 +518,8 @@ class JugnuWindow(QMainWindow):
         self.scheduler.start()
         self.automation_dialog = None
         self.tray_icon = None
+        tool_dir = os.path.dirname(self.settings_file) if os.path.dirname(self.settings_file) else os.getcwd()
+        self.tool_registry = ToolRegistry(tool_dir)
         try:
             if QSystemTrayIcon.isSystemTrayAvailable():
                 self.tray_icon = JugnuTrayIcon(self, self.scheduler)
@@ -1225,6 +1229,31 @@ class JugnuWindow(QMainWindow):
         if answer is not None:
             self.finish_answer(chat["id"], answer, False)
             return
+
+        # Agent tool direct execution: /exec <code> or /tool <name> <args>
+        if hasattr(self, "tool_registry"):
+            if user_text.startswith("/exec") or user_text.startswith("/python"):
+                code = user_text.split(maxsplit=1)[1].strip() if len(user_text.split(maxsplit=1)) > 1 else ""
+                res = self.tool_registry.execute_tool("python_runner", {"code": code})
+                out = res.get("output") or res.get("error") or "(no output)"
+                formatted = f"⚡ **Python Sandbox Output** ({res.get('duration_ms', 0):.1f}ms):\n```\n{out}\n```"
+                self.finish_answer(chat["id"], formatted, not res.get("success", False))
+                return
+            elif user_text.startswith("/tool"):
+                parts = user_text.split(maxsplit=2)
+                t_name = parts[1].strip() if len(parts) > 1 else ""
+                t_arg = parts[2].strip() if len(parts) > 2 else "{}"
+                import json
+                try:
+                    t_args = json.loads(t_arg)
+                except Exception:
+                    t_args = {"raw": t_arg}
+                res = self.tool_registry.execute_tool(t_name, t_args)
+                out = res.get("output") or res.get("error") or "(no output)"
+                formatted = f"⚡ **Tool `{t_name}` Output**:\n```\n{out}\n```"
+                self.finish_answer(chat["id"], formatted, not res.get("success", False))
+                return
+
         self.ask_ollama(chat["id"])
 
     def create_streaming_bubble(self, chat_id, timestamp=None):

@@ -92,6 +92,11 @@ STRINGS = {
         "auto_task_resume": "Resume Scheduler",
         "auto_notify_success": "Task “{name}” completed successfully.",
         "auto_notify_error": "Task “{name}” failed: {error}",
+        # Agent & Sandboxed Tools
+        "tool_card_title": "Tool Execution",
+        "tool_status_success": "Success",
+        "tool_status_error": "Error",
+        "tool_btn_details": "Details",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -185,6 +190,11 @@ STRINGS = {
         "auto_task_resume": "Scheduler Shuru Karo",
         "auto_notify_success": "Task “{name}” safaltapoorvak pura ho gaya.",
         "auto_notify_error": "Task “{name}” fail ho gaya: {error}",
+        # Agent & Sandboxed Tools
+        "tool_card_title": "Tool Chalaya Gaya",
+        "tool_status_success": "Safal",
+        "tool_status_error": "Truti",
+        "tool_btn_details": "Jankari",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",

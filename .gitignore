@@ -12,6 +12,8 @@ venv/
 jugnu_history.json
 jugnu_history.json.lock
 jugnu_settings.json
+jugnu_*.json
+jugnu_*.json.tmp
 
 # Environment variables / secrets
 .env
