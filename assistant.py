@@ -18,6 +18,7 @@ from core import (
     local_now,
 )
 from export_manager import export_chat
+from extensions import get_extension_manager
 from personas import get_persona, list_personas
 from scheduler import CronEvaluator, ScheduledTask, TaskStore
 from search_engine import SearchEngine
@@ -129,8 +130,9 @@ def show_help():
     print("7. /export [id] <format> - Export chat to md, html, json, or txt")
     print("8. /chats                - List all saved conversation history")
     print("9. /schedule             - Manage proactive background tasks and cron jobs")
-    print("10. help                 - Show available commands")
-    print("11. bye                  - Exit the assistant")
+    print("10. /todo, /scratch, /digest - Local offline extensions & slash commands")
+    print("11. help                 - Show available commands")
+    print("12. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -346,6 +348,12 @@ def run_assistant(persona_name="default"):
                     print(f"\nAssistant: Deleted scheduled task [{task.id}] '{task.title}'.")
             else:
                 print(f"\nAssistant: Unknown schedule action '{subcmd}'. Available: list, add, run, toggle, delete.")
+
+        # Local offline extensions and slash commands (e.g. /todo, /scratch, /digest)
+        elif get_extension_manager().is_slash_command(user_input):
+            reply = get_extension_manager().handle_command(user_input, context={"messages": []})
+            if reply is not None:
+                print(f"\nAssistant:\n{reply}")
 
         # General AI question
         else:

@@ -92,6 +92,11 @@ STRINGS = {
         "auto_task_resume": "Resume Scheduler",
         "auto_notify_success": "Task “{name}” completed successfully.",
         "auto_notify_error": "Task “{name}” failed: {error}",
+        # Extensions
+        "ext_btn": "⚡ Extensions",
+        "extensions_dialog_title": "Extensions Manager",
+        "extensions_header": "⚡ Local Extensions & Slash Commands",
+        "extensions_subhead": "Extend JUGNU with safe, offline productivity utilities and custom slash commands.",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, I got an empty response. Please try again.",
         "error_invalid_response": "Ollama returned an invalid response. Please try again.",
@@ -185,6 +190,11 @@ STRINGS = {
         "auto_task_resume": "Scheduler Shuru Karo",
         "auto_notify_success": "Task “{name}” safaltapoorvak pura ho gaya.",
         "auto_notify_error": "Task “{name}” fail ho gaya: {error}",
+        # Extensions
+        "ext_btn": "⚡ Extensions",
+        "extensions_dialog_title": "Extensions Manager",
+        "extensions_header": "⚡ Local Extensions aur Slash Commands",
+        "extensions_subhead": "JUGNU ko safe aur offline productivity utilities se extend karein.",
         # Replies shown when something goes wrong
         "error_empty_reply": "Sorry, mujhe empty response mila. Ek baar phir try karo.",
         "error_invalid_response": "Ollama se sahi jawab nahi mila. Ek baar phir try karo.",
