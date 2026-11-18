@@ -136,6 +136,30 @@ def _load_history():
         return []
 
 
+# ---------------- SHORTCUTS & PALETTE ----------------
+
+def show_shortcuts():
+    print("\n" + "=" * 55)
+    print("        JUGNU POWER-USER SHORTCUTS & PALETTE")
+    print("=" * 55)
+    print("• Navigation & Palette:")
+    print("  Ctrl+K          - Open Command Palette HUD")
+    print("  Ctrl+N          - New Conversation")
+    print("  Ctrl+Up / Down  - Switch Between Conversations")
+    print("  Esc             - Close Dialog / Cancel")
+    print("\n• Appearance & Settings:")
+    print("  Ctrl+D          - Toggle Dark / Light Theme")
+    print("  Ctrl+L          - Switch Language (English / Hinglish)")
+    print("  Ctrl+Shift+S    - Toggle Voice Speech Output")
+    print("  Ctrl+,          - Open Voice Settings Dialog")
+    print("\n• Chat & Help:")
+    print("  Enter           - Send Message")
+    print("  Shift+Enter     - Insert Newline")
+    print("  F1 or Ctrl+/    - Shortcuts Cheat Sheet")
+    print("  Ctrl+Q          - Quit Application")
+    print("=" * 55)
+
+
 # ---------------- HELP ----------------
 
 def show_help():
@@ -154,9 +178,10 @@ def show_help():
     print("12. /export [id] <format> - Export chat to md, html, json, or txt")
     print("13. /chats               - List all saved conversation history")
     print("14. /schedule            - Manage proactive background tasks and cron jobs")
-    print("15. /rag                 - Local knowledge base RAG index & search")
-    print("16. help                 - Show available commands")
-    print("17. bye                  - Exit the assistant")
+    print("15. /shortcuts, /palette - View global keyboard shortcuts")
+    print("16. /rag                 - Local knowledge base RAG index & search")
+    print("17. help                 - Show available commands")
+    print("18. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -219,6 +244,10 @@ def run_assistant(model=None, persona_name="default", initial_files=None):
         elif command in ["persona", "/persona"]:
             print(f"\nAssistant: Current persona is {active_persona.display_label} (temp: {active_persona.temperature})")
             print(f"Description: {active_persona.description}")
+
+        # Shortcuts / Palette
+        elif command in ["/shortcuts", "/palette", "shortcuts", "palette"]:
+            show_shortcuts()
 
         # Time
         elif command in ["time", "what is the time", "what time is it"]:
