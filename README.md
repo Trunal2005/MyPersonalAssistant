@@ -29,6 +29,10 @@ Contributors can earn points on the leaderboard based on merged PRs tagged with:
 ## ✨ Features
 
 - 💬 AI-powered chat using local Llama 3.2 via Ollama
+- 🎙️ 100% Offline Local Voice Dictation (STT) with push-to-talk (`Ctrl+Space` or `Ctrl+Shift+V`), click-to-dictate, and real-time mic waveform HUD (`stt.py`)
+- 🌊 Dynamic audio visualizer with silence detection, background noise suppression, and auto-punctuation
+- 📤 Comprehensive Multi-Format Conversation Exporter: Export any chat to PDF (`.pdf`), Markdown (`.md`), offline HTML (`.html`) with syntax highlighting, and JSON (`.json`) datasets via modal dialog or `Ctrl+E` (`exporter.py`)
+- 🎭 Multi-Persona System Prompt Studio & Custom AI Persona Switcher: Built-in specialized presets (Senior Code Reviewer, Python Architect, Academic Writing Tutor, Socratic Teacher, Debugging Specialist), per-conversation persona binding, temperature & context overrides, and JSON import/export (`personas.py`). Keyboard shortcut: `Ctrl+P`
 - 📝 Persistent chat history
 - ➕ New Chat & Clear Current Chat options
 - 🌓 Dark and Light Mode support
@@ -56,8 +60,13 @@ JUGNU has two front ends, a desktop window and a terminal version, that share on
 | `strings.py` | All text shown in the window, in English and Hinglish |
 | `markdown_render.py` | Turns Markdown in replies into styled text for the chat bubbles |
 | `tts.py` | Offline voice output |
+| `stt.py` | 100% offline local speech-to-text voice dictation engine with real-time waveform HUD |
+| `exporter.py` | Multi-format conversation exporter (PDF, Markdown with frontmatter, HTML with syntax highlighting, JSON) |
+| `personas.py` | Multi-persona system prompt studio, specialized presets, custom persona manager, and prompt injector |
 | `history_lock.py` | Stops two windows from using the same chat history |
-| `tests/` | Automated tests (`test_core.py` covers the shared core) |
+| `tests/` | Automated tests (`test_core.py` covers core, `test_stt.py` covers voice dictation, `test_exporter.py` covers export, `test_personas.py` covers personas) |
+| `history_lock.py` | Stops two windows from using the same chat history |
+| `tests/` | Automated tests (`test_core.py` covers core, `test_stt.py` covers voice dictation, `test_exporter.py` covers conversation export) |
 
 If something must behave the same in the window and in the terminal, it belongs in `core.py`. Wording and layout stay in the file that shows them.
 
