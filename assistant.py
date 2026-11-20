@@ -18,6 +18,7 @@ from core import (
     is_time_question,
     local_now,
 )
+from analytics import SessionAnalytics
 from context_ingest import (
     AttachedDocument,
     AttachmentError,
@@ -37,7 +38,9 @@ from scheduler import CronEvaluator, ScheduledTask, TaskStore
 from search_engine import SearchEngine
 
 # calculate() and is_time_question() now live in core.py; they stay importable from here.
-__all__ = ["calculate", "is_time_question", "ask_ai", "run_assistant"]
+__all__ = ["calculate", "is_time_question", "ask_ai", "run_assistant", "session_analytics"]
+
+session_analytics = SessionAnalytics()
 
 # ---------------- CONFIGURATION ----------------
 
@@ -107,6 +110,8 @@ def ask_ai(user_message, persona=None, model=None, attachments=None):
     )
 
     if result.ok:
+        if result.metrics:
+            session_analytics.record(result.metrics)
         return result.answer
 
     if result.error == ERROR_CONNECTION:
@@ -179,9 +184,10 @@ def show_help():
     print("13. /chats               - List all saved conversation history")
     print("14. /schedule            - Manage proactive background tasks and cron jobs")
     print("15. /shortcuts, /palette - View global keyboard shortcuts")
-    print("16. /rag                 - Local knowledge base RAG index & search")
-    print("17. help                 - Show available commands")
-    print("18. bye                  - Exit the assistant")
+    print("16. /stats               - Show session inference performance analytics")
+    print("17. /rag                 - Local knowledge base RAG index & search")
+    print("18. help                 - Show available commands")
+    print("19. bye                  - Exit the assistant")
     print("\nYou can also ask any general question.")
 
 
@@ -467,7 +473,7 @@ def run_assistant(model=None, persona_name="default", initial_files=None):
             else:
                 print(f"\nAssistant: Unknown schedule action '{subcmd}'. Available: list, add, run, toggle, delete.")
 
-        # RAG / Local Knowledge Base commands
+# RAG / Local Knowledge Base commands
         elif command.startswith("/rag") or command.startswith("rag"):
             kb = get_knowledge_base()
             args_str = user_input.split(maxsplit=1)[1].strip() if len(user_input.split(maxsplit=1)) > 1 else ""
@@ -513,11 +519,31 @@ def run_assistant(model=None, persona_name="default", initial_files=None):
             else:
                 print(f"\nAssistant: Unknown RAG action '{subcmd}'. Available: status, index, search, clear.")
 
+        # Performance analytics
+        elif command in ["/stats", "/analytics", "/metrics"]:
+            print(f"\nAssistant: {session_analytics.summary()}")
+
         # General AI question
         else:
-            print(f"\nAssistant: Thinking ({active_model})...")
-            answer = ask_ai(user_input, persona=active_persona, model=active_model, attachments=active_attachments)
-            print("\nAssistant:", answer)
+            print(f"\nAssistant: Thinking ({active_model})...", flush=True)
+            system_prompt = (active_persona.system_prompt + "\n\n") if active_persona and getattr(active_persona, "system_prompt", None) else SYSTEM_PROMPT
+            options = {"temperature": active_persona.temperature} if active_persona and hasattr(active_persona, "temperature") else None
+            user_content = assemble_prompt_with_attachments(user_input, active_attachments) if active_attachments else user_input
+            result = chat(build_messages(system_prompt, [{"role": "user", "content": user_content}]), model=active_model, options=options)
+            if result.ok:
+                if result.metrics:
+                    session_analytics.record(result.metrics)
+                print("\nAssistant:", result.answer)
+                if result.metrics and result.metrics.tps > 0:
+                    print(f"[{result.metrics.short_badge}]")
+            elif result.error == ERROR_CONNECTION:
+                print("I cannot connect to Ollama. Please make sure Ollama is running.")
+            elif result.error == ERROR_TIMEOUT:
+                print("The AI is taking too long to respond. Please try again.")
+            elif result.error == ERROR_INVALID:
+                print("An error occurred: Ollama returned an invalid response.")
+            else:
+                print(f"An error occurred: {result.detail}")
             active_attachments.clear()
 
 
