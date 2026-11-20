@@ -13,6 +13,7 @@ errors as a kind (ERROR_CONNECTION, ERROR_TIMEOUT, ...), never as text, so the
 CLI and the GUI can each word the message their own way (the GUI translates it).
 """
 import ast
+import json
 import operator
 import re
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from analytics import InferenceMetrics, parse_ollama_metrics
 
 MODEL = "llama3.2:3b"
 OLLAMA_URL = "http://localhost:11434/api/chat"
+OLLAMA_TAGS_URL = OLLAMA_URL.rsplit("/", 1)[0] + "/tags"
 HISTORY_LIMIT = 10  # how many recent messages are sent to the model
 
 # ---------------- CLOCK ----------------
@@ -268,6 +270,28 @@ def chat(messages, *, model=None, timeout=120, keep_alive=None, options=None):
         return ChatResult(error=ERROR_OTHER, detail=str(error))
 
 
+def list_local_models(timeout: int = 3) -> list[str]:
+    """List available local model names from Ollama, with fallback presets."""
+    try:
+        res = requests.get(OLLAMA_TAGS_URL, timeout=timeout)
+        if res.status_code == 200:
+            models = [m.get("name") for m in res.json().get("models", []) if m.get("name")]
+            if models:
+                return models
+    except Exception:
+        pass
+    return [MODEL, "mistral:latest", "qwen2.5:3b", "phi3:latest"]
+
+
+def stream_chat(messages, *, model=None, timeout=120, keep_alive=None, options=None):
+    """Send `messages` to Ollama and yield incremental token chunks.
+
+    Yields dicts with:
+      {"delta": str, "done": False}
+      {"delta": str, "done": True, "eval_count": int, "eval_duration": int, "total_duration": int}
+      {"error": str, "detail": str, "done": True}
+    """
+    payload = {"model": model or MODEL, "messages": messages, "stream": True}
 def stream_chat(messages, *, timeout=180, keep_alive=None, options=None):
     """Send `messages` to Ollama with stream=True and return the streaming response object."""
     payload = {"model": MODEL, "messages": messages, "stream": True}
@@ -275,4 +299,29 @@ def stream_chat(messages, *, timeout=180, keep_alive=None, options=None):
         payload["keep_alive"] = keep_alive
     if options is not None:
         payload["options"] = options
+    try:
+        response = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=timeout)
+        response.raise_for_status()
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            data = json.loads(line)
+            msg = data.get("message") or {}
+            delta = msg.get("content") or ""
+            done = bool(data.get("done", False))
+            yield {
+                "delta": delta,
+                "done": done,
+                "eval_count": data.get("eval_count"),
+                "eval_duration": data.get("eval_duration"),
+                "total_duration": data.get("total_duration"),
+            }
+            if done:
+                break
+    except requests.Timeout:
+        yield {"error": ERROR_TIMEOUT, "detail": "Model request timed out", "done": True}
+    except requests.ConnectionError:
+        yield {"error": ERROR_CONNECTION, "detail": "Cannot connect to Ollama", "done": True}
+    except Exception as error:
+        yield {"error": ERROR_OTHER, "detail": str(error), "done": True}
     return requests.post(OLLAMA_URL, json=payload, stream=True, timeout=timeout)
